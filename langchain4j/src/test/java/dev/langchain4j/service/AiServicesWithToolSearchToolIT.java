@@ -1,6 +1,7 @@
 package dev.langchain4j.service;
 
 import dev.langchain4j.LoggingChatModelListener;
+import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.SearchBehavior;
 import dev.langchain4j.agent.tool.Tool;
 import dev.langchain4j.agent.tool.ToolExecutionRequest;
@@ -84,7 +85,7 @@ public class AiServicesWithToolSearchToolIT {
     public static class SearchableTools {
 
         @Tool
-        public String getWeather(String city) {
+        public String getWeather(@P(name = "city") String city) {
             if (city.equals("London")) {
                 return "sunny";
             } else {
@@ -93,7 +94,7 @@ public class AiServicesWithToolSearchToolIT {
         }
 
         @Tool
-        public String getTime(String city) {
+        public String getTime(@P(name = "city") String city) {
             return "12:34:56";
         }
 
@@ -1051,7 +1052,7 @@ public class AiServicesWithToolSearchToolIT {
         verifyNoMoreInteractions(spySearchableTools);
 
         // when
-        String answer3 = assistant.chat("How much is 2+2? Use one of the tools!");
+        String answer3 = assistant.chat("How much is 2+2? Use 'add' tool to calculate the result!");
 
         // then
         assertThat(answer3).contains("21");

@@ -5,7 +5,7 @@
     <parent>
         <groupId>dev.langchain4j</groupId>
         <artifactId>langchain4j-parent</artifactId>
-        <version>1.13.0-beta23-SNAPSHOT</version>
+        <version>1.23.0-beta33-SNAPSHOT</version>
         <relativePath>../langchain4j-parent/pom.xml</relativePath>
     </parent>
 
@@ -29,7 +29,9 @@
         <module>integration-tests-class-instance-loader/integration-tests-class-instance-loader-quarkus</module>
         <module>integration-tests-class-metadata-provider</module>
         <module>integration-tests-class-metadata-provider/integration-tests-class-metadata-provider-spring</module>
+        <module>integration-tests-decision-models</module>
         <module>integration-tests-guardrails</module>
+        <module>integration-tests-jackson3</module>
     </modules>
 
     <properties>
@@ -39,5 +41,6 @@
         <maven.javadoc.skip>true</maven.javadoc.skip>
         <maven.source.skip>true</maven.source.skip>
         <enforcer.skipRules>requireUpperBoundDeps</enforcer.skipRules>
+        <revapi.skip>true</revapi.skip>
     </properties>
 </project>

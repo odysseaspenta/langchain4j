@@ -1,0 +1,45 @@
+[
+  {
+    "extension": "revapi.differences",
+    "configuration": {
+      "ignore": true,
+      "differences": [
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class ai.docling.serve.api.DoclingServeApi",
+          "justification": "Docling Serve API type intentionally exposed by the Docling document parser integration for client configuration"
+        },
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class ai.docling.serve.api.convert.request.options.ConvertDocumentOptions",
+          "justification": "Docling Serve API type intentionally exposed by the Docling document parser integration for document conversion options"
+        },
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class ai.docling.serve.api.convert.response.InBodyConvertDocumentResponse",
+          "justification": "Docling Serve API type intentionally exposed to allow custom document text extraction"
+        },
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class dev.langchain4j.data.document.Document",
+          "justification": "Core langchain4j type intentionally part of the document parser API"
+        },
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class ai.docling.serve.api.request.DocumentRequest",
+          "justification": "Docling Serve API type intentionally exposed so callers can choose the Docling operation (convert, hierarchical chunk, hybrid chunk) via a request template"
+        },
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class ai.docling.serve.api.chunk.response.ChunkDocumentResponse",
+          "justification": "Docling Serve API type intentionally exposed to allow custom text extraction from chunk responses"
+        },
+        {
+          "code": "java.class.externalClassExposedInAPI",
+          "new": "missing-class ai.docling.serve.api.response.ProcessedDocumentResponse",
+          "justification": "Docling Serve API type intentionally exposed by DoclingRequestExecutor so callers can customize how Docling is invoked"
+        }
+      ]
+    }
+  }
+]

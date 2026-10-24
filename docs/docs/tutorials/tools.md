@@ -247,6 +247,29 @@ ChatRequest request2 = ChatRequest.builder()
 ChatResponse response2 = model.chat(request2);
 ```
 
+#### Multimodal Tool Results
+`ToolExecutionResultMessage` can also carry non-text content such as images.
+Instead of using `text()`, you can use the builder with `contents()`:
+
+```java
+ToolExecutionResultMessage toolExecutionResultMessage = ToolExecutionResultMessage.builder()
+        .id(toolExecutionRequest.id())
+        .toolName(toolExecutionRequest.name())
+        .contents(
+                TextContent.from("Here is the photo"),
+                ImageContent.from(Image.builder()
+                        .base64Data(base64Data)
+                        .mimeType("image/png")
+                        .build())
+        )
+        .build();
+```
+
+:::note
+Not all LLM providers support multimodal tool results.
+See [Returning Images and Multimodal Content](/tutorials/tools#returning-images-and-multimodal-content) for details on provider support.
+:::
+
 ### Using `StreamingChatModel`
 
 Once you have a `List<ToolSpecification>`, you can call the model:
@@ -346,6 +369,8 @@ Methods annotated with `@Tool` can accept any number of parameters of various ty
 - Object types: `String`, `Integer`, `Double`, etc
 - Custom POJOs (can contain nested POJOs)
 - `enum`s
+- Polymorphic types (sealed interfaces/classes or types annotated with Jackson
+  `@JsonSubTypes` / `@JsonTypeInfo`) — see [Polymorphic Tool Parameters](#polymorphic-tool-parameters)
 - `List<T>`/`Set<T>` where `T` is one of the above-mentioned types
 - `Map<K,V>` (you need to manually specify the types of `K` and `V` in the parameter description with `@P`)
 
@@ -379,27 +404,20 @@ void getTemperature(
 #### Required and Optional
 
 By default, all tool method parameters are considered **_required_**.
-This means that the LLM will have to produce a value for such a parameter.
+This means the parameter is listed in the JSON schema's `required` array sent to the LLM,
+instructing it to produce a value.
 A parameter can be made optional by annotating it with `@P(required = false)`:
 ```java
 @Tool
-void getTemperature(String location, @P("Unit of temperature", required = false) Unit unit) {
+String getTemperature(String location, @P(required = false) Unit unit) {
     ...
 }
 ```
 
-#### Alternative: Using `Optional<T>` for Optional Parameters
-
-Instead of annotating parameters with `@P(required = false)`, you simply declare the parameter as `Optional<T>`.
-Any parameter of type `Optional<T>` will be treated as optional automatically, even without specify `required = false` in the `@P` annotation.
-
-**Example:**
+Alternatively, you can declare the parameter as `Optional<T>`:
 ```java
 @Tool
-void getTemperature(
-    @P("Temperature value") double value,
-    @P("Unit of temperature") Optional<String> unit
-) {
+String getTemperature(String location, Optional<Unit> unit) {
     ...
 }
 ```
@@ -420,6 +438,154 @@ Please note that when used with [structured outputs](/tutorials/structured-outpu
 all fields and sub-fields are considered **_optional_** by default.
 :::
 
+:::caution Required is advisory: the LLM can still omit arguments
+The `required` flag controls the JSON schema sent to the LLM (required parameters are listed
+in the schema's `required` array). The LLM is expected to honor this, but in practice it can
+disregard the schema and omit an argument anyway.
+
+In LangChain4j 1.x, this is detected only for **primitive** parameters (`int`, `long`, `boolean`, …) — a
+missing primitive triggers the `ToolArgumentsErrorHandler` (see [Error Handling](#handling-tool-arguments-errors)
+below). **Missing object parameters are not validated**: `null` is passed to the
+`@Tool`-annotated method even though the schema marked the parameter as required.
+
+We are planning to remove this asymmetry in LangChain4j 2.0 so that all required arguments are
+validated uniformly. If this planned change would affect your use case, please
+[open an issue](https://github.com/langchain4j/langchain4j/issues) so we can hear your feedback before it lands.
+
+If you want a real fallback instead of `null` (or instead of an error for primitive parameters), use
+[`@P(defaultValue = ...)`](#default-parameter-values).
+:::
+
+#### Default Parameter Values
+
+`@P(defaultValue = "...")` declares a value that LangChain4j substitutes when the LLM
+omits the argument. It's the simplest way to make a parameter optional and supply a
+sensible fallback that your tool method receives.
+
+```java
+enum SortBy { RELEVANCE, DATE, RATING }
+
+@Tool
+List<Article> searchArticles(
+    String query,
+    @P(defaultValue = "10") int limit,
+    @P(defaultValue = "[\"en\"]") List<String> languages,
+    @P(defaultValue = "RELEVANCE") SortBy sortBy
+) {
+    // When the LLM omits them:
+    //   'limit'     -> 10
+    //   'languages' -> ["en"]
+    //   'sortBy'    -> SortBy.RELEVANCE
+}
+```
+
+**Setting `defaultValue` implies optional in the JSON schema** — the parameter is *not*
+listed in the schema's `required` array, regardless of `@P(required)`. The LLM is told
+it may omit the argument; if it does, LangChain4j fills in the default before invoking
+your method.
+
+**Supported types:**
+
+| Type                         | Format                   | Example                                  |
+|------------------------------|--------------------------|------------------------------------------|
+| `String`                     | used verbatim            | `defaultValue = "USD"`                   |
+| Primitive / boxed primitive  | type-specific conversion | `"10"`, `"3.14"`, `"true"`               |
+| `enum`                       | enum constant name       | `defaultValue = "EUR"`                   |
+| `UUID`                       | `UUID.fromString`        | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `BigDecimal`, `BigInteger`   | numeric literal          | `"1.5"`, `"100"`                         |
+| `List<T>` / `Set<T>` / array | JSON array               | `"[\"a\",\"b\"]"`, `"[1,2,3]"`           |
+| `Map<K,V>`                   | JSON object              | `"{\"a\":1,\"b\":2}"`                    |
+| POJOs (including nested)     | JSON object              | `"{\"name\":\"Klaus\",\"age\":42}"`      |
+
+The default value string is parsed at AI Service registration time. If it cannot be
+converted into the parameter's type, AI Service construction fails immediately with
+`IllegalConfigurationException`, naming the offending parameter — typos are caught at
+startup rather than on the first LLM call.
+
+**Defaults only apply to absence, not to wrong values.** If the LLM provides an argument
+that fails type coercion (e.g. `"banana"` for an `int`), the coercion error propagates as
+usual — the default is *not* used as a fallback.
+
+**Defaults are re-parsed on every invocation,** so a tool that mutates a defaulted
+`List`/`Map`/POJO does not contaminate later calls:
+
+```java
+@Tool
+void process(@P(defaultValue = "[\"a\",\"b\"]") List<String> tags) {
+    tags.add("processed"); // safe — next invocation still receives ["a","b"]
+}
+```
+
+**Restrictions** (rejected with `IllegalConfigurationException` at registration time):
+
+- `defaultValue` cannot be combined with `Optional<T>` — `Optional` already encodes
+  "absent"; pick one mechanism.
+- `defaultValue` cannot be set on LangChain4j-injected parameters (`@ToolMemoryId`,
+  `InvocationContext`, etc.) — they don't come from the LLM.
+
+#### Polymorphic Tool Parameters
+
+A tool parameter can be a polymorphic type — a base type whose concrete subtype is decided
+by the LLM at call time. Sealed interfaces and sealed classes work without annotations;
+plain abstract classes and interfaces must declare their subtypes with Jackson's
+`@JsonSubTypes`.
+The schema sent to the LLM contains an `anyOf` over the permitted subtypes, each with a
+discriminator property (defaulting to `"type"`) so the LLM can communicate which concrete
+type it produced; LangChain4j deserializes the LLM's argument into the right subtype
+before invoking your tool method.
+
+This works for the polymorphic type as a parameter, for `List<T>` / `Set<T>` of polymorphic
+types, and for polymorphic types nested inside another POJO parameter.
+
+**Sealed interfaces and classes — no annotations needed:**
+
+```java
+sealed interface Animal permits Dog, Cat {}
+
+record Dog(String name, String breed) implements Animal {}
+
+record Cat(String name, boolean indoor) implements Animal {}
+
+class AnimalRegistry {
+
+    @Tool("Registers a single animal")
+    void registerAnimal(Animal animal) { /* dispatched to Dog or Cat */ }
+
+    @Tool("Registers a batch of animals")
+    void registerAnimals(List<Animal> animals) { /* mixed Dog / Cat */ }
+
+    @Tool("Registers an owner with their pet")
+    void registerOwner(Owner owner) { /* Owner.pet is dispatched */ }
+}
+
+record Owner(String name, Animal pet) {}
+```
+
+**Jackson `@JsonSubTypes` / `@JsonTypeInfo`** are also supported and let you decouple wire
+names from Java class names:
+
+```java
+@JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "kind")
+@JsonSubTypes({
+    @JsonSubTypes.Type(value = Square.class, name = "square"),
+    @JsonSubTypes.Type(value = Circle.class, name = "circle")
+})
+interface Shape {}
+
+class ShapeRegistry {
+
+    @Tool("Registers a shape")
+    void registerShape(Shape shape) { /* dispatched to Square or Circle */ }
+}
+```
+
+The set of supported `@JsonTypeInfo` options, the discriminator-name resolution order,
+`defaultImpl` behavior, the `visible` flag, and field-collision detection are described in
+detail in [Polymorphic Types](/tutorials/structured-outputs#polymorphic-types) under
+Structured Outputs — they apply identically to tool parameters.
+
+#### Recursive Parameters
+
 Recursive parameters (e.g., a `Person` class having a `Set<Person> children` field)
 are currently supported only by OpenAI.
 
@@ -430,6 +596,47 @@ If the method has a `void` return type, "Success" string is sent to the LLM if t
 If the method has a `String` return type, the returned value is sent to the LLM as is, without any conversions.
 
 For other return types, the returned value is converted into a JSON string before being sent to the LLM.
+
+#### Returning Images and Multimodal Content
+
+Tools can also return images and other non-text content. When a tool returns one of the following types,
+the result is sent to the LLM as multimodal content (e.g., image) instead of being serialized to JSON text:
+
+- `Image` — sent as a single image
+- `ImageContent` — sent as a single image content
+- `Content` — sent as a single content element (e.g., `TextContent`, `ImageContent`)
+- `List<Content>` — sent as multiple content elements
+- `Content[]` — sent as multiple content elements
+
+For example, a tool that takes a photo and returns an image:
+```java
+@Tool("Takes a photo and returns it")
+Image takePhoto() {
+    byte[] imageBytes = camera.capture();
+    return Image.builder()
+            .base64Data(Base64.getEncoder().encodeToString(imageBytes))
+            .mimeType("image/png")
+            .build();
+}
+```
+
+Or a tool that returns both text and an image:
+```java
+@Tool("Takes a photo and returns it with a description")
+List<Content> takePhoto() {
+    Image image = camera.capture();
+    return List.of(
+            TextContent.from("Photo taken at " + LocalDateTime.now()),
+            ImageContent.from(image)
+    );
+}
+```
+
+:::note
+Not all LLM providers support multimodal tool results.
+Providers that currently support images in tool results include Anthropic, Amazon Bedrock, and Google AI Gemini.
+Other providers will throw an `UnsupportedFeatureException` if a tool returns non-text content.
+:::
 
 ### AI services as tools for other AI services
 
@@ -559,6 +766,110 @@ Depending on the tool, the LLM might understand it well even without any descrip
 (for example, `add(a, b)` is obvious),
 but it is usually better to provide clear and meaningful names and descriptions.
 This way, the LLM has more information to decide whether or not to call the given tool, and how to do so.
+
+### Inheritance and tool discovery
+
+When you pass a tool object to an AI Service, LangChain4j discovers `@Tool` methods from the object's class, all of its superclasses (up to, but excluding, `Object`), and `default` and `static` methods from implemented interfaces.
+
+```java
+class BaseMathTools {
+
+    @Tool("Calculates the sum of two numbers")
+    int sum(int a, int b) {
+        return a + b;
+    }
+}
+
+class AdvancedMathTools extends BaseMathTools {
+
+    @Tool("Calculates the product of two numbers")
+    int multiply(int a, int b) {
+        return a * b;
+    }
+}
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .tools(new AdvancedMathTools()) // both "sum" and "multiply" are available
+    .build();
+```
+
+A subclass can override a `@Tool` method from its parent. In that case, only the subclass version is used — including its `@Tool` annotation:
+
+```java
+class ParentTools {
+
+    @Tool("Returns the greeting")
+    String greet(String name) {
+        return "Hello, " + name;
+    }
+}
+
+class ChildTools extends ParentTools {
+
+    @Override
+    @Tool(name = "greet_formal", value = "Returns a formal greeting")
+    String greet(String name) {
+        return "Good day, " + name;
+    }
+}
+```
+
+Here the LLM will see a single tool named `greet_formal` with description "Returns a formal greeting".
+
+A method is a tool also when it overrides or implements a `@Tool`-annotated method without repeating the annotation.
+This is handy when the tools are declared in an interface and implemented elsewhere:
+
+```java
+interface WeatherTools {
+
+    @Tool("Returns the weather in the given city")
+    String weather(String city);
+}
+
+class OpenMeteoWeatherTools implements WeatherTools {
+
+    @Override
+    public String weather(String city) {
+        return ...;
+    }
+}
+
+Assistant assistant = AiServices.builder(Assistant.class)
+    .chatModel(model)
+    .tools(new OpenMeteoWeatherTools()) // "weather" is available, described as declared in the interface
+    .build();
+```
+
+The LLM sees the `@Tool` annotation of the overridden method, unless the overriding method declares its own.
+
+This is also what makes tools work when the tool object is wrapped in a proxy,
+for example a Spring bean to which an `@Aspect`, `@Transactional` or `@Async` has been applied.
+Such a proxy is a generated subclass that overrides the tool methods, and Java does not copy method annotations
+into overriding methods, so the annotations are looked up on the class being proxied.
+Tools are invoked through the proxy, so interceptors and aspects still run.
+
+If a subclass declares a method with the same name as a parent method but with different parameters (an overload, not an override), both methods are discovered. Since tool names must be unique and default to the method name, you must give at least one of them an explicit name:
+
+```java
+class ParentTools {
+
+    @Tool(name = "process_text", value = "Processes a text input")
+    String process(String input) {
+        return input.toUpperCase();
+    }
+}
+
+class ChildTools extends ParentTools {
+
+    @Tool(name = "process_number", value = "Processes a numeric input")
+    int process(int input) {
+        return input * 2;
+    }
+}
+```
+
+If both methods resolve to the same tool name, an `IllegalArgumentException` is thrown at AI Service creation time.
 
 ### `@P`
 Method parameters can optionally be annotated with `@P`.
@@ -761,7 +1072,9 @@ List<ToolExecution> toolExecutions = result.toolExecutions();
 ToolExecution toolExecution = toolExecutions.get(0);
 ToolExecutionRequest request = toolExecution.request();
 String result = toolExecution.result(); // tool execution result as text
+List<Content> resultContents = toolExecution.resultContents(); // tool execution result as content list (may include images)
 Object resultObject = toolExecution.resultObject(); // actual value returned by the tool
+Map<String, Object> attributes = toolExecution.attributes(); // attributes of the tool execution result, see below
 ```
 
 In streaming mode, you can do so by specifying `onToolExecuted` callback:
@@ -780,6 +1093,38 @@ tokenStream
     .onError(...)
     .start();
 ```
+
+### Tool Result Attributes
+
+A tool execution result can carry attributes: a `Map<String, Object>` that is **not** sent to the LLM.
+Attributes are useful for data that only your application needs, for example the ID of a record
+that the tool has created, or a widget that your UI should render.
+
+Attributes can be set by a custom `ToolExecutor`:
+```java
+ToolExecutor toolExecutor = (toolExecutionRequest, context) -> ToolExecutionResult.builder()
+        .resultText("Sunny, 22 degrees") // sent to the LLM
+        .attributes(Map.of("widget", weatherWidget)) // not sent to the LLM
+        .build();
+```
+For [MCP](/tutorials/mcp) tools, they originate from the `_meta` field of the tool call response.
+For those, the tool provider needs to be configured with
+[`returnToolResultAttributes(true)`](/tutorials/mcp#mcp-tool-result-metadata).
+
+Attributes can be read from the `ToolExecution` (see [Accessing Executed Tools](#accessing-executed-tools) above).
+They are also propagated into `ToolExecutionResultMessage.attributes()`,
+so they are stored in the [`ChatMemory`](/tutorials/chat-memory) together with the message.
+
+:::note
+If you use a `ChatMemoryStore` that persists messages, they are serialized to JSON.
+Make sure that all attribute values can be serialized to JSON and are useful once deserialized:
+- A value that cannot be serialized (for example an `InputStream`) will fail the whole store operation.
+- Values are deserialized as plain JSON types, so a custom object stored as an attribute
+comes back as a `Map` and can no longer be cast to its original type.
+
+Attributes are also stored for every message, so avoid putting large values there
+if the conversation is persisted.
+:::
 
 ### Specifying Tools Programmatically
 
@@ -830,22 +1175,47 @@ ToolExecutor toolExecutor = new DefaultToolExecutor(tools, method);
 ```
 
 Once we have one or multiple (`ToolSpecification`, `ToolExecutor`) pairs,
-we can specify them when creating an AI Service:
+we wrap each pair in an `AiServiceTool` and pass the list to the AI Service:
 ```java
+AiServiceTool tool = AiServiceTool.builder()
+        .toolSpecification(toolSpecification)
+        .toolExecutor(toolExecutor)
+        .build();
+
 Assistant assistant = AiServices.builder(Assistant.class)
     .chatModel(chatModel)
-    .tools(Map.of(toolSpecification, toolExecutor))
+    .tools(List.of(tool))
     .build();
 ```
 
-Additionally, we can pass a list of tool names that should [immediately/directly return](/tutorials/tools#returning-immediately-the-result-of-a-tool-execution-request) their results and not send them to the LLM for reprocessing.
+#### Configuring Immediate Return for Programmatic Tools
+
+In case you need to specify
+[immediate return behavior](/tutorials/tools#returning-immediately-the-result-of-a-tool-execution-request)
+for a tool, set its `ReturnBehavior` on the `AiServiceTool` builder:
 
 ```java
-Set<String> immediateReturnToolNames = Set.of("get_booking_details");
+AiServiceTool bookingTool = AiServiceTool.builder()
+        .toolSpecification(bookingToolSpec)
+        .toolExecutor(bookingExecutor)
+        .returnBehavior(IMMEDIATE)
+        .build();
+
+AiServiceTool closeTool = AiServiceTool.builder()
+        .toolSpecification(closeToolSpec)
+        .toolExecutor(closeExecutor)
+        .returnBehavior(IMMEDIATE_IF_LAST)
+        .build();
+
+AiServiceTool weatherTool = AiServiceTool.builder()
+        .toolSpecification(weatherToolSpec)
+        .toolExecutor(weatherExecutor)
+        // ReturnBehavior.TO_LLM by default
+        .build();
 
 Assistant assistant = AiServices.builder(Assistant.class)
     .chatModel(chatModel)
-    .tools(Map.of(toolSpecification, toolExecutor), immediateReturnToolNames)
+    .tools(List.of(bookingTool, closeTool, weatherTool))
     .build();
 ```
 
@@ -856,7 +1226,7 @@ One can configure a `ToolProvider` that will be called each time the AI service 
 and will provide the tools that should be included in the current request to the LLM.
 The `ToolProvider` accepts a `ToolProviderRequest`
 (that contains the `UserMessage`, chat memory ID and [`InvocationParameters`](/tutorials/tools#invocationparameters))
-and returns a `ToolProviderResult` that contains tools in a form of a `Map` from `ToolSpecification` to `ToolExecutor`.
+and returns a `ToolProviderResult` that contains tools for the current AI Service invocation.
 
 Here is an example of how to add the `get_booking_details` tool only when the user's message contains the word "booking":
 ```java
@@ -883,31 +1253,26 @@ Assistant assistant = AiServices.builder(Assistant.class)
     .build();
 ```
 
-#### Configuring Immediate Return in Dynamic Tools
+It is possible to mix statically (both `@Tool`-annotated methods and tools configured programmatically)
+and dynamically specified tools in the same AI Service invocation.
+In this case all static and dynamic tools are merged together.
 
-When building `ToolProviderResult`, you can mark tools for [immediate return](/tutorials/tools#returning-immediately-the-result-of-a-tool-execution-request) using the ToolProviderResult.builder():
+#### Configuring Immediate Return for Dynamic Tools
+
+When building `ToolProviderResult`, you can mark tools for
+[immediate return](/tutorials/tools#returning-immediately-the-result-of-a-tool-execution-request)
+using `ToolProviderResult.builder()`. The `add(ToolSpecification, ToolExecutor, ReturnBehavior)` overload
+accepts any of `TO_LLM`, `IMMEDIATE`, or `IMMEDIATE_IF_LAST`:
 
 ```java
 ToolProvider toolProvider = (toolProviderRequest) -> {
     return ToolProviderResult.builder()
         .add(bookingToolSpec, bookingExecutor, ReturnBehavior.IMMEDIATE)
-        .add(weatherToolSpec, weatherExecutor)
+        .add(closeToolSpec, closeExecutor, ReturnBehavior.IMMEDIATE_IF_LAST)
+        .add(weatherToolSpec, weatherExecutor) // ReturnBehavior.TO_LLM by default
         .build();
 };
 ```
-
-You can also mark multiple tools by name:
-
-```java
-ToolProvider toolProvider = (toolProviderRequest) -> {
-    return ToolProviderResult.builder()
-        .addAll(allTools)
-        .immediateReturnToolNames(Set.of("get_booking_details", "cancel_booking"))
-        .build();
-};
-```
-
-It is possible for an AI service to use both programmatically and dynamically specified tools in the same invocation.
 
 ### Tool Search
 
@@ -966,9 +1331,10 @@ A `ToolSearchStrategy` is responsible for:
 - Executing tool search requests generated by the LLM
 - Returning matching tool names, which will then be resolved and exposed
 
-LangChain4j currently provides 2 out-of-the-box implementations:
+LangChain4j currently provides 3 out-of-the-box implementations:
 - `SimpleToolSearchStrategy` – keyword-based matching
 - `VectorToolSearchStrategy` – semantic search using embeddings
+- `DecisionModelToolSearchStrategy` – a [decision model](/tutorials/decision-models#selecting-tools) decides which tools match the search
 
 See Javadoc of these classes for more details.
 
@@ -1074,7 +1440,13 @@ Tool search is currently marked as experimental and may evolve in future release
 
 ### Returning immediately the result of a tool execution request
 
-By default, the result of a tool execution request is sent back to the LLM that uses this result and further reprocesses it. However, in some circumstances, the result produced by that tool execution request already represents the expected result of the AI service invocation. In this case it is possible to configure the tool to immediately/directly return its result, skipping a wasteful and resource consuming reprocessing by the LLM. This can be done by configuring the `returnBehavior` field of the `@Tool` annotation as in the following example:
+By default, the result of a tool execution request is sent back to the LLM
+that uses this result and further reprocesses it. However, in some circumstances,
+the result produced by that tool execution request already represents the expected result
+of the AI service invocation. In this case it is possible to configure the tool to
+immediately/directly return its result, skipping a wasteful and resource consuming
+reprocessing by the LLM. This can be done by configuring the `returnBehavior` field of the
+`@Tool` annotation as in the following example:
 
 ```java
 class CalculatorWithImmediateReturn {
@@ -1085,10 +1457,6 @@ class CalculatorWithImmediateReturn {
     }
 }
 ```
-
-:::note
-This feature is supported only on AI Services having a `Result<T>` return type. Attempting to use it on AI Service with a different return type will produce an `IllegalConfigurationException`. See [Return Types](/tutorials/ai-services#return-types) for more information about `Result<T>`.
-:::
 
 In this way, an `Assistant` service like the following
 
@@ -1113,18 +1481,210 @@ will return a response directly from the tool invocation. For instance, promptin
 Result<String> result = assistant.chat("How much is 37 plus 87?");
 ```
 
-will produce a `Result` with a null content, while the actual response of `124` will have to be retrieved from the `result.toolExecutions()`. Without the immediate return, the LLM would have to reprocess the result of the `add` tool execution request, thus returning a response like: `The result of adding 37 and 87 is 124.`
+will produce a `Result` with a `Result.content() == null`,
+while the actual response of `124` will have to be retrieved from the `result.toolExecutions()`.
+Without the immediate return, the LLM would have to reprocess the result of the `add` tool execution request,
+thus returning a response like: `The result of adding 37 and 87 is 124.`
 
-Also note that if the LLM calls multiple tools and at least one of them is not immediate, then reprocessing will happen.
+#### Non-`Result` AI Service method Return Types
 
-:::note
-When using programmatic tools, you can mark tools for immediate return by passing a set of tool names
-to the `.tools()` method. When using dynamic tools via `ToolProvider`, you can use the overloaded method, 
-`.add(ToolSpecification, ToolExecutor, ReturnBehavior)`, on `ToolProviderResult.builder()`. 
-See the respective sections above for examples.
-:::
+If your AI Service method signatures do not return a `Result` type, then your
+chat method calls may or may not succeed when there are immediate tool calls based on the following rules:
+
+* If an AI Service method return type is void, the request will succeed.
+* If there are any non-immediate tool calls, the request will fail with a `IllegalConfigurationException` exception.
+* If all tool executions have a null (or void) result and the return type is not a primitive, the request will succeed and the return value will be `null`.
+* If there is one and only one non-null tool execution result, and the result can be resolved to the return type, then the request will succeed and return that tool result.
+* If there are multiple non-null tool execution results, the request will fail with a `IllegalConfigurationException` exception.
+* If there is one tool execution result and it cannot be resolved to the return type, the request will fail with a `IllegalConfigurationException` exception.
+
+#### Immediate-return rule with multiple tool calls in a single response
+
+When the LLM returns multiple tool calls in a single response,
+the loop returns immediately (without sending the results back to the LLM) only when **both** of the following hold:
+
+1. **No tool errored.** Any error in any tool call forces reprocessing so the LLM can react to the error on the next turn.
+2. **Either** every tool in the response is `IMMEDIATE` (no `TO_LLM` tools mixed in) **or** the last tool is `IMMEDIATE_IF_LAST` (see next section).
+
+Examples (tools listed in the order returned by the LLM in a single response;
+`(err)` marks a tool whose execution errored):
+
+| Tool calls in the response                     | Outcome            | Why                                                          |
+|------------------------------------------------|--------------------|--------------------------------------------------------------|
+| `[IMMEDIATE]`                                  | return immediately | only tool is `IMMEDIATE`                                     |
+| `[IMMEDIATE, IMMEDIATE]`                       | return immediately | every tool is `IMMEDIATE`/`IMMEDIATE_IF_LAST`                |
+| `[IMMEDIATE, TO_LLM]`                          | reprocess          | `TO_LLM` disqualifies the all-immediate rule                 |
+| `[IMMEDIATE_IF_LAST]`                          | return immediately | last tool is `IMMEDIATE_IF_LAST`                             |
+| `[TO_LLM, IMMEDIATE_IF_LAST]`                  | return immediately | last tool is `IMMEDIATE_IF_LAST`                             |
+| `[IMMEDIATE_IF_LAST, TO_LLM]`                  | reprocess          | not last, and `TO_LLM` disqualifies the all-immediate rule   |
+| `[IMMEDIATE, IMMEDIATE_IF_LAST]`               | return immediately | last tool is `IMMEDIATE_IF_LAST`                             |
+| `[IMMEDIATE_IF_LAST, IMMEDIATE]`               | return immediately | every tool is `IMMEDIATE`/`IMMEDIATE_IF_LAST`                |
+| `[TO_LLM, IMMEDIATE_IF_LAST, IMMEDIATE]`       | reprocess          | not last, and `TO_LLM` disqualifies the all-immediate rule   |
+| `[IMMEDIATE_IF_LAST(err)]`                     | reprocess          | any error disables immediate return                          |
+| `[TO_LLM(err), IMMEDIATE_IF_LAST]`             | reprocess          | any error disables immediate return                          |
+
+See the Javadoc of `ReturnBehavior` for the full immediate-return-vs-reprocess matrix.
+
+#### `IMMEDIATE_IF_LAST` for tools that explicitly close an action sequence
+
+`ReturnBehavior.IMMEDIATE_IF_LAST` is meant for tools the LLM uses to explicitly signal
+the end of a multi-step action — for example, an `endExecutionAndGetFinalResult` tool
+the LLM appendsafter a sequence of clicks, navigations, etc.
+
+Without `IMMEDIATE_IF_LAST`, the LLM would typically need two turns to close out execution:
+one turn that mixes work tools (`TO_LLM`) with the closing tool,
+and a second turn where the LLM, after seeing all the results,
+calls the closing tool alone. The loop only returns immediately on the second turn.
+
+With `IMMEDIATE_IF_LAST`, the loop returns immediately as soon as the LLM places the tool last
+in its response — saving one full LLM round trip per invocation.
+
+```java
+class ScreenAutomation {
+
+    @Tool
+    String leftMouseClick(int x, int y) { /* ... */ }
+
+    @Tool
+    String typeText(String text) { /* ... */ }
+
+    @Tool(returnBehavior = ReturnBehavior.IMMEDIATE_IF_LAST)
+    String endExecutionAndGetFinalResult(String summary) { return summary; }
+}
+```
+
+For an LLM response of `[leftMouseClick, typeText, endExecutionAndGetFinalResult]`,
+the loop returns immediately after executing all three tools.
+If the LLM puts the closing tool anywhere other than last
+(e.g. `[endExecutionAndGetFinalResult, leftMouseClick]`),
+the loop continues and sends all results back to the LLM.
+
+`IMMEDIATE_IF_LAST` also counts toward the all-immediate rule of `IMMEDIATE`:
+a response made up only of `IMMEDIATE` and/or `IMMEDIATE_IF_LAST` tools returns immediately
+regardless of which one is last (still subject to the no-errors rule).
+
+Like `IMMEDIATE`, `IMMEDIATE_IF_LAST` is only allowed on AI services with a `Result<T>` return type.
 
 ### Error Handling
+
+:::note
+The defaults below apply to the synchronous and `TokenStream` modes. The asynchronous and reactive modes
+already behave the way the defaults are planned to behave: a tool *execution* error fails the invocation
+unless the exception says what the LLM may be told, and a tool *argument-parse* error is sent to the LLM
+instead of failing the invocation. A handler you configure explicitly is used by every mode.
+See [Non-blocking and Reactive](/tutorials/non-blocking#tool-errors).
+:::
+
+#### Ready-Made Handlers
+
+Both handler interfaces come with ready-made implementations for the most common cases,
+so for those you do not have to write a handler yourself:
+
+| Handler | What happens when a tool fails |
+|---------|--------------------------------|
+| `ToolArgumentsErrorHandler.sendExceptionMessageToLlm()` | The message of the error is sent to the LLM, so that it can correct the arguments and try again. The AI Service invocation continues. ⚠️ See the warning below. |
+| `ToolArgumentsErrorHandler.failInvocation()` | The error is rethrown: the AI Service invocation fails and nothing is sent to the LLM. |
+| `ToolExecutionErrorHandler.sendExceptionMessageToLlm()` | The message of the exception thrown by the tool is sent to the LLM (or the text from `messageForLlm()`, if the exception implements `ToolErrorVisibleToLlm`), so that it can react to it. The AI Service invocation continues. ⚠️ See the warning below. |
+| `ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm()` | Only exceptions implementing `ToolErrorVisibleToLlm` are shown to the LLM, using the text they provide. Every other exception fails the AI Service invocation. See [Deciding per exception what the LLM sees](#deciding-per-exception-what-the-llm-sees). |
+| `ToolExecutionErrorHandler.sendGenericMessageToLlmUnlessVisibleToLlm(String)` | Exceptions implementing `ToolErrorVisibleToLlm` are shown to the LLM, using the text they provide. For every other exception, the given generic message is sent to the LLM, and the exception is logged at WARN level. The AI Service invocation continues. |
+| `ToolExecutionErrorHandler.failInvocation()` | The exception is rethrown: the AI Service invocation fails and nothing is sent to the LLM. |
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolArgumentsErrorHandler(ToolArgumentsErrorHandler.sendExceptionMessageToLlm())
+        .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocation())
+        .build();
+```
+
+For anything else - sanitizing the error before the LLM sees it, or deciding based on the type of the error -
+write the handler yourself, as described in the sections below.
+
+:::warning Sending exception messages to the LLM can expose sensitive data
+The message of an exception is usually written for developers, not for the LLM: it can contain internal
+application details such as file paths, SQL, credentials embedded in error strings, responses of downstream
+services or personal data. Everything sent to the LLM reaches the LLM provider, is stored in the chat memory
+and can end up in the answer the user reads, in logs and in observability pipelines.
+
+Use `sendExceptionMessageToLlm()` only when you know that the exception messages of all your tools are
+written with that in mind. Otherwise send a generic or sanitized description of the failure to the LLM,
+and keep the details in your logs.
+:::
+
+:::note
+When an AI Service is configured with tools, but the error handlers are not configured explicitly,
+LangChain4j logs a warning once per JVM. Configuring the handlers explicitly (with any of the options
+on this page) removes that warning and makes your application immune to the planned change of the defaults.
+The warning can also be turned off by setting the log level of the
+`dev.langchain4j.service.ToolErrorHandlingNotice` logger to `OFF`.
+:::
+
+##### Configuring the handlers in Quarkus
+
+The examples on this page use `AiServices.builder(...)`. In Quarkus, an AI Service is declared with
+`@RegisterAiService`, and the handlers are configured with static methods on the interface:
+
+```java
+@RegisterAiService
+public interface Assistant {
+
+    String chat(String userMessage);
+
+    @HandleToolExecutionError
+    static ToolErrorHandlerResult onToolError(Throwable error, ToolErrorContext context) {
+        return ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm().handle(error, context);
+    }
+}
+```
+
+For the whole application, declare a class implementing `ToolExecutionErrorHandler` and annotate it with
+`@DefaultToolExecutionErrorHandler` (the qualifier goes on a type, not on a producer method).
+
+Note that Quarkus builds its AI Services itself, so the warning described above is not logged there.
+Quarkus also uses a default tool execution error handler of its own, which sends the message of the exception
+to the LLM and does not look at `ToolErrorVisibleToLlm`. To have that interface honored, configure
+`failInvocationUnlessVisibleToLlm()` or `sendExceptionMessageToLlm()` explicitly, as shown above.
+
+##### Configuring the handlers in Spring Boot
+
+With the Spring Boot starter, an AI Service is declared with `@AiService`, and the handlers are declared as beans:
+
+```java
+@Configuration
+class ToolErrorHandlingConfig {
+
+    @Bean
+    ToolExecutionErrorHandler toolExecutionErrorHandler() {
+        return ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm();
+    }
+
+    @Bean
+    ToolArgumentsErrorHandler toolArgumentsErrorHandler() {
+        return ToolArgumentsErrorHandler.sendExceptionMessageToLlm();
+    }
+}
+```
+
+In the default (automatic) wiring mode, these beans are used by every `@AiService`.
+In the explicit wiring mode, each AI Service names the beans it uses:
+
+```java
+@AiService(
+        wiringMode = EXPLICIT,
+        chatModel = "openAiChatModel",
+        tools = "bookingTools",
+        toolExecutionErrorHandler = "toolExecutionErrorHandler",
+        toolArgumentsErrorHandler = "toolArgumentsErrorHandler")
+interface Assistant {
+
+    String chat(String userMessage);
+}
+```
+
+See [Spring Boot Integration](/tutorials/spring-boot-integration#explicit-component-wiring) for more details
+on the wiring modes.
+
 
 #### Handling Tool Name Errors
 
@@ -1147,8 +1707,20 @@ AssistantHallucinatedTool assistant = AiServices.builder(AssistantHallucinatedTo
 
 #### Handling Tool Arguments Errors
 
-By default, when something is wrong with tool arguments (e.g., the LLM generates an invalid JSON),
-the AI Service will not be able to execute the tool, so it will fail with an exception.
+By default, when something is wrong with tool arguments (e.g., the LLM generates an invalid JSON
+or omits a required parameter), the AI Service will not be able to execute the tool, so it will
+fail with an exception.
+
+:::caution Recommended: feed argument errors back to the LLM
+The current default (throw) is rarely what you want.
+Argument errors usually come from the LLM, and LLMs can typically self-correct when given a clear
+error message. Configure a `ToolArgumentsErrorHandler` that returns the error text so the LLM can
+retry with corrected arguments.
+
+We are planning to change the default to this behaviour in an upcoming release. If this planned
+change would affect your use case, please [open an issue](https://github.com/langchain4j/langchain4j/issues)
+so we can hear your feedback before it lands.
+:::
 
 You can customize this behaviour by configuring a `ToolArgumentsErrorHandler` on the AI Service:
 
@@ -1162,11 +1734,31 @@ Assistant assistant = AiServices.builder(Assistant.class)
 
 Currently, there are two ways to handle errors inside the `ToolArgumentsErrorHandler`:
 
-- Throw an exception: this will stop the AI service flow.
 - Return a text message (e.g., an error description) that will be sent back to the LLM,
   allowing it to respond appropriately (for example, by correcting the error and retrying).
+- Throw an exception: this will stop the AI service flow.
 
-Here is an example of the first approach:
+**Recommended (let the LLM retry):**
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolArgumentsErrorHandler(ToolArgumentsErrorHandler.sendExceptionMessageToLlm())
+        .build();
+```
+
+**Strict (stop the flow on any argument error):**
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolArgumentsErrorHandler(ToolArgumentsErrorHandler.failInvocation())
+        .build();
+```
+
+If you want the AI Service to fail with an exception of your own type, throw it from the handler:
 
 ```java
 Assistant assistant = AiServices.builder(Assistant.class)
@@ -1182,13 +1774,23 @@ try {
 }
 ```
 
-Here is an example of the second approach:
+##### Accessing raw exception
+
+When a tool throws an exception that wraps another (e.g. `ToolGuardrailException` wrapping `SecurityException`),
+LangChain4j extracts the inner cause via `getCause()` and passes it as the `error` argument.
+Use `errorContext.rawError()` to access the outer exception as originally thrown — useful when the
+wrapper type (not the cause) determines how the error should be handled.
 
 ```java
 Assistant assistant = AiServices.builder(Assistant.class)
         .chatModel(chatModel)
         .tools(tools)
-        .toolArgumentsErrorHandler((error, errorContext) -> ToolErrorHandlerResult.text("Something is wrong with tool arguments: " + error.getMessage()))
+        .toolArgumentsErrorHandler((error, errorContext) -> {
+            if (errorContext.rawError() instanceof MyCriticalException) {
+                throw (MyCriticalException) errorContext.rawError();
+            }
+            return ToolErrorHandlerResult.text(error.getMessage());
+        })
         .build();
 ```
 
@@ -1198,23 +1800,311 @@ By default, when a method annotated with `@Tool` throws an `Exception`,
 the message of the `Exception` (`e.getMessage()`) will be sent to the LLM as the result of tool's execution.
 This allows the LLM to correct its mistake and retry, if it considers it necessary.
 
-You can customize this behaviour by configuring a `ToolExecutionErrorHandler` on the AI Service:
+:::warning Recommended: do not send raw exception messages to the LLM in production
+The current default sends the raw exception message back to the LLM. In production this can leak
+internal application data: stack traces, file paths, credentials embedded in error strings,
+downstream API responses, PII from error messages, etc.
+Once fed to the LLM, this content can flow into responses, chat history, observability pipelines,
+and the LLM provider's logs.
+
+Configure a `ToolExecutionErrorHandler` that returns either a generic message or a curated/sanitized
+description of the failure, and rely on your own logs and observability events for the underlying detail.
+Note that once you configure a handler, LangChain4j stops logging tool failures for you - that log exists
+only to warn you about the default behaviour.
+
+We are planning to change the default in an upcoming release, to
+[`failInvocationUnlessVisibleToLlm()`](#deciding-per-exception-what-the-llm-sees): the AI Service invocation fails,
+unless the exception itself says what the LLM may be told. If this planned change would affect your use
+case, please [open an issue](https://github.com/langchain4j/langchain4j/issues) so we can hear your
+feedback before it lands.
+:::
+
+You can customize this behaviour by configuring a `ToolExecutionErrorHandler` on the AI Service.
+
+**Recommended (let each exception decide, see [below](#deciding-per-exception-what-the-llm-sees)):**
 
 ```java
 Assistant assistant = AiServices.builder(Assistant.class)
         .chatModel(chatModel)
         .tools(tools)
-        .toolExecutionErrorHandler((error, errorContext) -> ToolErrorHandlerResult.text("Something is wrong with tool execution: " + error.getMessage()))
+        .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm())
+        .build();
+```
+
+**Strict (no failure ever reaches the LLM):**
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocation())
+        .build();
+```
+
+**Let the LLM react to the failure, but without exposing the exception message:**
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolExecutionErrorHandler((error, errorContext) -> ToolErrorHandlerResult.text("Tool execution failed."))
+        .build();
+```
+
+**Current default (send the message of the exception to the LLM) - ⚠️ see the warning above about exposing sensitive data:**
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolExecutionErrorHandler(ToolExecutionErrorHandler.sendExceptionMessageToLlm())
         .build();
 ```
 
 As with the `ToolArgumentsErrorHandler`, there are two ways to handle errors in `ToolExecutionErrorHandler`:
-throw an exception or return a text message.
+return a text message or throw an exception. You can use `errorContext.rawError()` to inspect
+the raw error before cause-unwrapping when deciding how to handle it.
+
+##### Deciding per exception what the LLM sees
+
+Sending every exception to the LLM is risky, and failing on every exception takes away the LLM's
+ability to recover from failures it could work around. Usually you want something in between:
+the LLM should learn that there is no order with the ID it invented, but it should not learn
+that your database is called `ORDERS_V2` and rejected the query.
+
+To express that, let your exception implement `ToolErrorVisibleToLlm` and write, in
+`messageForLlm()`, exactly what the LLM should be told:
+
+```java
+public class OrderNotFoundException extends RuntimeException implements ToolErrorVisibleToLlm {
+
+    private final String orderId;
+
+    public OrderNotFoundException(String orderId) {
+        super("Order " + orderId + " not found");
+        this.orderId = orderId;
+    }
+
+    @Override
+    public String messageForLlm() {
+        return "There is no order with ID " + orderId + ". Ask the user to check the order number.";
+    }
+}
+```
+
+If you do not want to declare an exception class, throw a ready-made one instead.
+Log the original error yourself if you need it: it is kept as the cause, but it is not sent to the LLM.
+
+```java
+@Tool("Returns the status of an order")
+String orderStatus(String orderId) {
+    try {
+        return orderService.status(orderId);
+    } catch (SQLException e) {
+        // the LLM is told only what it needs to know; the cause is not sent to it
+        log.warn("Could not read the order database", e);
+        throw ToolErrorVisibleToLlm.from("The order database is temporarily unavailable.", e);
+    }
+}
+```
+
+Then configure the handler that honors it:
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(chatModel)
+        .tools(tools)
+        .toolExecutionErrorHandler(ToolExecutionErrorHandler.failInvocationUnlessVisibleToLlm())
+        .build();
+```
+
+Now `OrderNotFoundException` reaches the LLM as "There is no order with ID ...", while a
+`NullPointerException` or a failing database connection fails the AI Service invocation,
+so you find out about it instead of the LLM quietly apologizing to your user.
+
+The tools that LangChain4j provides, such as [skills](/tutorials/skills), tool search and
+[MCP](/tutorials/mcp) tools, report the errors the LLM can do something about (for example, a missing
+argument or an unknown skill name) with `LlmVisibleToolExecutionException`, which implements
+`ToolErrorVisibleToLlm`, so the LLM keeps seeing them with this handler too.
+
+For exceptions you cannot change - typically those thrown by a library - write the handler yourself and
+decide there what the LLM is told:
+
+```java
+.toolExecutionErrorHandler((error, errorContext) -> {
+    if (error instanceof EntityNotFoundException) {
+        return ToolErrorHandlerResult.text("That record does not exist.");
+    }
+    throw new RuntimeException(error);
+})
+```
+
+:::warning
+Do not pass the message of a library exception to the LLM unchanged: it is written for developers and may
+contain internal details, exactly like the message of your own exceptions.
+:::
+
+:::note
+`failInvocationUnlessVisibleToLlm()` is the behavior we are planning to make the default in an upcoming
+release. Configuring it explicitly today means the change will not affect your application.
+:::
+
+### Compensating Tool Actions
+
+When an AI Service uses multiple tools to accomplish a task, a failure in one tool
+can leave the system in an inconsistent state — some tools have already executed
+successfully while others have not. For example, in a bank transfer the LLM might
+credit the recipient's account first and then fail to withdraw from the sender's
+account due to insufficient funds, leaving the recipient with extra money.
+
+To handle this, you can enable **compensation on tool errors**. When enabled,
+if any tool execution fails, all previously successful tool calls that declare a
+compensating action are automatically undone in reverse order.
+
+#### Declaring Compensating Actions with `@CompensateFor`
+
+Use the `@CompensateFor` annotation on a method to declare it as the compensating
+action for a `@Tool`. The `value` must match the name of the tool as exposed to the LLM —
+its `@Tool(name = ...)` attribute when set, otherwise the `@Tool` method name (used as the
+tool name by default).
+The compensating method must either have the same parameter types as the tool,
+or accept a single `ToolExecution` parameter.
+
+**Option 1: Same parameter types** — the compensating method receives the same
+arguments that were passed to the original tool:
+
+```java
+class BankAccountService {
+
+    @Tool("credits money to a bank account")
+    void credit(String name, double amount) {
+        accounts.merge(name, amount, Double::sum);
+    }
+
+    @CompensateFor("credit")
+    void uncredit(String name, double amount) {
+        accounts.merge(name, -amount, Double::sum);
+    }
+
+    @Tool("withdraws money from a bank account")
+    void withdraw(String name, double amount) {
+        if (accounts.getOrDefault(name, 0.0) < amount) {
+            throw new RuntimeException("Insufficient funds");
+        }
+        accounts.merge(name, -amount, Double::sum);
+    }
+
+    @CompensateFor("withdraw")
+    void unwithdraw(String name, double amount) {
+        accounts.merge(name, amount, Double::sum);
+    }
+}
+```
+
+**Option 2: `ToolExecution` parameter** — the compensating method receives the full
+`ToolExecution`, giving access to both the original arguments and the tool's
+**return value**. This is useful when undoing an action requires information
+produced by the original execution (e.g. a transaction ID):
+
+```java
+class BankAccountService {
+
+    @Tool("credits money to a bank account")
+    String credit(String name, double amount) {
+        accounts.merge(name, amount, Double::sum);
+        return createTransactionRecord(name, amount); // e.g. "TX-42"
+    }
+
+    @CompensateFor("credit")
+    void uncredit(ToolExecution toolExecution) {
+        String transactionId = toolExecution.result(); // "TX-42"
+        reverseTransaction(transactionId);
+    }
+}
+```
+
+#### Enabling Compensation
+
+Call `.compensateOnToolErrors(true)` when building the AI Service:
+
+```java
+Assistant assistant = AiServices.builder(Assistant.class)
+        .chatModel(model)
+        .tools(new BankAccountService())
+        .compensateOnToolErrors(true)
+        .build();
+```
+
+With this configuration, if the LLM calls `credit("Dmytro", 100)` and then
+`withdraw("Mario", 100)` which fails, the framework will automatically call
+`uncredit("Dmytro", 100)` to undo the credit. Instead of throwing an exception,
+the framework sends informative result messages back to the LLM for each tool:
+rolled-back tools get a message like _"Tool 'credit' was executed successfully but
+was rolled back due to failure of tool 'withdraw'"_, and the failed tool gets its
+normal error message. This keeps the `ChatMemory` consistent and lets the LLM
+decide what to do next — retry, inform the user, or take a different approach.
+
+Without `.compensateOnToolErrors(true)`, the error is sent back to the LLM as usual and no
+compensation occurs — even if `@CompensateFor` annotations are present.
+
+#### Validation
+
+When `.compensateOnToolErrors(true)` is enabled, each `@CompensateFor` is validated:
+- The referenced tool must exist (by name) on the same object.
+- The compensating method must have exactly the same parameter types as the tool,
+  or accept a single `ToolExecution` parameter.
+
+If either check fails, an `IllegalConfigurationException` is thrown immediately,
+so misconfigurations are caught at startup rather than at runtime.
+If `.compensateOnToolErrors(true)` is not enabled, `@CompensateFor` annotations
+are silently ignored and no validation is performed.
+
+#### Notes and Limitations
+
+:::note
+Compensation is best-effort: if a compensating action itself throws an exception, it is
+logged at WARN level and the remaining compensating actions continue to execute.
+:::
+
+:::note
+`@CompensateFor` methods are not exposed to the LLM — they are internal compensation
+infrastructure and do not appear in tool specifications.
+:::
+
+:::note
+Compensating actions always run sequentially in reverse order, even when tool
+execution is configured to run in parallel via `.executeToolsConcurrently()`.
+:::
+
+:::note
+`@CompensateFor` methods can be inherited from superclasses, consistent with how
+`@Tool` methods are discovered.
+:::
+
+:::note
+`@CompensateFor` only works with `@Tool`-annotated methods. Programmatically or
+dynamically defined tools (e.g. MCP tools, tools registered via `ToolSpecification`)
+are not supported.
+:::
+
+:::note
+Compensating tool actions are currently marked as experimental and may evolve
+in future releases.
+:::
 
 ## Model Context Protocol (MCP)
 
 You can also import [tools from MCP server](https://modelcontextprotocol.io/docs/concepts/tools).
 More information on this can be found [here](/tutorials/mcp/#creating-an-mcp-tool-provider).
+
+:::note
+In the asynchronous and reactive AI Service modes, tools behave differently: they always run on an `Executor`
+and therefore **execute concurrently by default** (pass a single-threaded `Executor` to
+`executeToolsConcurrently(Executor)` to serialize them), a tool **execution** error fails the invocation while a
+tool **argument-parse** error is sent back to the LLM, and a hand-written `ToolExecutor` should implement
+`executeAsync(...)` or it will fail loudly rather than block a thread.
+See [Non-blocking and Reactive](/tutorials/non-blocking).
+:::
 
 ## Related Tutorials
 

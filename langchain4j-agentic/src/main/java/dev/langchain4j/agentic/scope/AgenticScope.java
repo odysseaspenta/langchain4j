@@ -1,7 +1,7 @@
 package dev.langchain4j.agentic.scope;
 
 import dev.langchain4j.agentic.declarative.TypedKey;
-import dev.langchain4j.agentic.internal.PendingResponse;
+import dev.langchain4j.agentic.internal.DeferredResponse;
 import dev.langchain4j.invocation.LangChain4jManaged;
 import java.util.List;
 import java.util.Map;
@@ -45,6 +45,31 @@ public interface AgenticScope extends LangChain4jManaged {
      * @param <T>   the type of the value
      */
     <T> void writeState(Class<? extends TypedKey<T>> key, T value);
+
+    /**
+     * Writes a value into the shared state under the given key only if the key is not already
+     * considered present by {@link #hasState(String)}. A key is considered absent when it has
+     * no mapping, or its value is a blank string — so this method <em>will</em> overwrite a
+     * previously stored blank string.
+     * <p>
+     * If {@code value} is {@code null} the call is a no-op (unlike {@link #writeState(String, Object)},
+     * which removes the key on {@code null}).
+     *
+     * @param key   the state key
+     * @param value the value to store, or {@code null} for no-op
+     */
+    void writeStateIfAbsent(String key, Object value);
+
+    /**
+     * Writes a value into the shared state using a strongly typed key only if the key is not
+     * already considered present by {@link #hasState(Class)}. See
+     * {@link #writeStateIfAbsent(String, Object)} for the full absence/blank-string semantics.
+     *
+     * @param key   the typed key class
+     * @param value the value to store, or {@code null} for no-op
+     * @param <T>   the type of the value
+     */
+    <T> void writeStateIfAbsent(Class<? extends TypedKey<T>> key, T value);
 
     /**
      * Writes multiple key-value pairs into the shared state at once.
@@ -154,12 +179,13 @@ public interface AgenticScope extends LangChain4jManaged {
     List<AgentInvocation> agentInvocations(Class<?> agentType);
 
     /**
-     * Completes a {@link PendingResponse} stored in this scope's state.
+     * Completes a {@link DeferredResponse} stored in this scope's state.
      * This is typically called by an external system (e.g., a REST endpoint) to provide
      * a human's response after a process restart or when using a polling/event-driven model.
      *
      * @param responseId the unique identifier of the pending response
-     * @param value the value to complete the response with
+     * @param value the value to complete the response with, or {@code null} to complete it with no value,
+     *              which removes the key from the state as {@link #writeState(String, Object)} does
      * @return {@code true} if a matching pending response was found and completed
      */
     default boolean completePendingResponse(String responseId, Object value) {
@@ -167,12 +193,97 @@ public interface AgenticScope extends LangChain4jManaged {
     }
 
     /**
-     * Returns the identifiers of all {@link PendingResponse} instances stored in this scope's state
+     * Completes the single {@link DeferredResponse} stored in this scope's state.
+     * This is a convenience overload of {@link #completePendingResponse(String, Object)} for the
+     * common case where exactly one pending response is expected.
+     *
+     * @param value the value to complete the response with
+     * @return {@code true} if the pending response was found and completed
+     * @throws IllegalStateException if there is not exactly one pending response
+     */
+    default boolean completePendingResponse(Object value) {
+        Set<String> ids = pendingResponseIds();
+        if (ids.size() != 1) {
+            throw new IllegalStateException(
+                    "Expected exactly 1 pending response, but found " + ids.size() + ": " + ids);
+        }
+        return completePendingResponse(ids.iterator().next(), value);
+    }
+
+    /**
+     * Returns the identifiers of all {@link DeferredResponse} instances stored in this scope's state
      * that have not yet been completed.
      *
      * @return a set of pending response identifiers
      */
     default Set<String> pendingResponseIds() {
         return Set.of();
+    }
+
+    /**
+     * Stores non-serializable execution context in this scope, keyed by name.
+     * <p>
+     * This allows custom {@link dev.langchain4j.agentic.planner.Planner} implementations to store
+     * runtime objects that are needed during execution but should not be persisted.
+     * The execution context is stored in a {@code transient} map and will not be serialized.
+     * <p>
+     * This is distinct from {@link #writeState(String, Object)}, which is for serializable
+     * agent interaction data that forms part of the conversation state.
+     *
+     * @param key     the key to use for this context (must not be {@code null})
+     * @param context the execution context instance to store (must not be {@code null})
+     * @throws IllegalArgumentException if {@code key} or {@code context} is {@code null}
+     */
+    void writeExecutionContext(String key, Object context);
+
+    /**
+     * Stores non-serializable execution context in this scope, using the class name as the key.
+     * <p>
+     * This is a convenience method that delegates to {@link #writeExecutionContext(String, Object)}
+     * using the fully qualified class name as the key.
+     *
+     * @param type    the class type to use as the key for this context
+     * @param context the execution context instance to store
+     * @throws IllegalArgumentException if {@code context} is {@code null}
+     */
+    default void writeExecutionContext(Class<?> type, Object context) {
+        writeExecutionContext(type.getName(), context);
+    }
+
+    /**
+     * Retrieves non-serializable execution context from this scope by key.
+     * <p>
+     * Returns execution context previously stored via {@link #writeExecutionContext(String, Object)}.
+     *
+     * @param key the key used to store the execution context
+     * @return the execution context instance previously stored for this key, or {@code null} if none exists
+     */
+    Object executionContext(String key);
+
+    /**
+     * Retrieves non-serializable execution context from this scope by key with type-safe casting.
+     * <p>
+     * Returns execution context previously stored via {@link #writeExecutionContext(String, Object)}.
+     *
+     * @param key  the key used to store the execution context
+     * @param type the expected type of the execution context (for type-safe casting)
+     * @param <T>  the type of the execution context
+     * @return the execution context instance previously stored for this key, or {@code null} if none exists
+     * @throws ClassCastException if the stored context cannot be cast to the expected type
+     */
+    <T> T executionContextAs(String key, Class<T> type);
+
+    /**
+     * Retrieves non-serializable execution context from this scope by type.
+     * <p>
+     * This is a convenience method that delegates to {@link #executionContextAs(String, Class)}
+     * using the fully qualified class name as the key.
+     *
+     * @param type the class type used as the key for the execution context
+     * @param <T>  the type of the execution context
+     * @return the execution context instance previously stored for this type, or {@code null} if none exists
+     */
+    default <T> T executionContextAs(Class<T> type) {
+        return executionContextAs(type.getName(), type);
     }
 }

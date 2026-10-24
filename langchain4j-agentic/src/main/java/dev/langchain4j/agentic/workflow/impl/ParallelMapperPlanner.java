@@ -1,5 +1,7 @@
 package dev.langchain4j.agentic.workflow.impl;
 
+import static java.util.Arrays.copyOf;
+
 import dev.langchain4j.agentic.internal.AgentExecutor;
 import dev.langchain4j.agentic.internal.MapperAgentInvoker;
 import dev.langchain4j.agentic.planner.Action;
@@ -13,8 +15,6 @@ import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 
-import static java.util.Arrays.copyOf;
-
 public class ParallelMapperPlanner implements Planner {
 
     private final String itemsProvider;
@@ -22,6 +22,7 @@ public class ParallelMapperPlanner implements Planner {
     private final Class<? extends Object[]> arrayclass;
 
     private AgentExecutor subagent;
+    private String outputKey;
     private String resultKeyPrefix;
     private int itemCount;
     private final AtomicInteger completedCount = new AtomicInteger();
@@ -35,6 +36,7 @@ public class ParallelMapperPlanner implements Planner {
     @Override
     public void init(InitPlanningContext initPlanningContext) {
         this.subagent = (AgentExecutor) initPlanningContext.subagents().get(0);
+        this.outputKey = initPlanningContext.plannerAgent().outputKey();
     }
 
     @Override
@@ -47,7 +49,7 @@ public class ParallelMapperPlanner implements Planner {
         List<?> items = collectItems(collectionObj);
 
         if (items.isEmpty()) {
-            return done();
+            return doneWithResults(planningContext, List.of());
         }
 
         this.itemCount = items.size();
@@ -85,10 +87,19 @@ public class ParallelMapperPlanner implements Planner {
             List<Object> results = new ArrayList<>(itemCount);
             for (int i = 0; i < itemCount; i++) {
                 results.add(planningContext.agenticScope().readState(resultKeyPrefix + "_" + i));
+                planningContext.agenticScope().writeState(resultKeyPrefix + "_" + i, null);
             }
-            return done(isArrayResult ? copyOf(results.toArray(), results.size(), arrayclass) : results);
+            return doneWithResults(planningContext, results);
         }
         return done();
+    }
+
+    private Action doneWithResults(PlanningContext planningContext, List<Object> results) {
+        Object result = isArrayResult ? copyOf(results.toArray(), results.size(), arrayclass) : results;
+        if (outputKey != null && !outputKey.isBlank()) {
+            planningContext.agenticScope().writeState(outputKey, result);
+        }
+        return done(result);
     }
 
     @Override

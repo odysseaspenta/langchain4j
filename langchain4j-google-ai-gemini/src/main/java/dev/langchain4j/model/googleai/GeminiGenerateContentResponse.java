@@ -1,22 +1,26 @@
 package dev.langchain4j.model.googleai;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.util.List;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 record GeminiGenerateContentResponse(
-        String responseId,
-        String modelVersion,
-        List<GeminiCandidate> candidates,
-        GeminiUsageMetadata usageMetadata,
-        GroundingMetadata groundingMetadata) {
+        @JsonProperty("responseId") String responseId,
+        @JsonProperty("modelVersion") String modelVersion,
+        @JsonProperty("candidates") List<GeminiCandidate> candidates,
+        @JsonProperty("usageMetadata") GeminiUsageMetadata usageMetadata,
+        @JsonProperty("groundingMetadata") GroundingMetadata groundingMetadata,
+        @JsonProperty("promptFeedback") GeminiPromptFeedback promptFeedback) {
 
     @JsonIgnoreProperties(ignoreUnknown = true)
     record GeminiCandidate(
-            GeminiContent content,
-            GeminiFinishReason finishReason,
-            GeminiUrlContextMetadata urlContextMetadata,
-            GroundingMetadata groundingMetadata) {
+            @JsonProperty("content") GeminiContent content,
+            @JsonProperty("finishReason") GeminiFinishReason finishReason,
+            @JsonProperty("urlContextMetadata") GeminiUrlContextMetadata urlContextMetadata,
+            @JsonProperty("groundingMetadata") GroundingMetadata groundingMetadata,
+            @JsonProperty("safetyRatings") List<GeminiSafetyRating> safetyRatings) {
+
         enum GeminiFinishReason {
             FINISH_REASON_UNSPECIFIED,
             STOP,
@@ -28,15 +32,33 @@ record GeminiGenerateContentResponse(
             BLOCKLIST,
             PROHIBITED_CONTENT,
             SPII,
-            MALFORMED_FUNCTION_CALL
+            MALFORMED_FUNCTION_CALL,
+            IMAGE_RECITATION,
+            IMAGE_SAFETY,
+            IMAGE_PROHIBITED_CONTENT,
+            IMAGE_OTHER,
+            NO_IMAGE,
+            UNEXPECTED_TOOL_CALL,
+            TOO_MANY_TOOL_CALLS,
+            MISSING_THOUGHT_SIGNATURE,
+            MALFORMED_RESPONSE,
+            ESCALATION
         }
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record GeminiUrlContextMetadata(List<GeminiUrlMetadata> urlMetadata) {}
+    record GeminiPromptFeedback(
+            @JsonProperty("blockReason") String blockReason,
+            @JsonProperty("safetyRatings") List<GeminiSafetyRating> safetyRatings) {}
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record GeminiUrlMetadata(String retrievedUrl, GeminiUrlRetrievalStatus urlRetrievalStatus) {}
+    record GeminiUrlContextMetadata(
+            @JsonProperty("urlMetadata") List<GeminiUrlMetadata> urlMetadata) {}
+
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    record GeminiUrlMetadata(
+            @JsonProperty("retrievedUrl") String retrievedUrl,
+            @JsonProperty("urlRetrievalStatus") GeminiUrlRetrievalStatus urlRetrievalStatus) {}
 
     enum GeminiUrlRetrievalStatus {
         URL_RETRIEVAL_STATUS_UNSPECIFIED,
@@ -47,7 +69,12 @@ record GeminiGenerateContentResponse(
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)
-    record GeminiUsageMetadata(Integer promptTokenCount, Integer candidatesTokenCount, Integer totalTokenCount) {
+    record GeminiUsageMetadata(
+            @JsonProperty("promptTokenCount") Integer promptTokenCount,
+            @JsonProperty("candidatesTokenCount") Integer candidatesTokenCount,
+            @JsonProperty("totalTokenCount") Integer totalTokenCount,
+            @JsonProperty("cachedContentTokenCount") Integer cachedContentTokenCount,
+            @JsonProperty("thoughtsTokenCount") Integer thoughtsTokenCount) {
 
         public static Builder builder() {
             return new Builder();
@@ -57,6 +84,8 @@ record GeminiGenerateContentResponse(
             private Integer promptTokenCount;
             private Integer candidatesTokenCount;
             private Integer totalTokenCount;
+            private Integer cachedContentTokenCount;
+            private Integer thoughtsTokenCount;
 
             private Builder() {}
 
@@ -75,8 +104,23 @@ record GeminiGenerateContentResponse(
                 return this;
             }
 
+            Builder cachedContentTokenCount(Integer cachedContentTokenCount) {
+                this.cachedContentTokenCount = cachedContentTokenCount;
+                return this;
+            }
+
+            Builder thoughtsTokenCount(Integer thoughtsTokenCount) {
+                this.thoughtsTokenCount = thoughtsTokenCount;
+                return this;
+            }
+
             GeminiUsageMetadata build() {
-                return new GeminiUsageMetadata(promptTokenCount, candidatesTokenCount, totalTokenCount);
+                return new GeminiUsageMetadata(
+                        promptTokenCount,
+                        candidatesTokenCount,
+                        totalTokenCount,
+                        cachedContentTokenCount,
+                        thoughtsTokenCount);
             }
         }
     }

@@ -4,32 +4,42 @@ import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies.SnakeCaseStrategy;
-import com.fasterxml.jackson.databind.annotation.JsonNaming;
-import com.fasterxml.jackson.databind.annotation.JsonSerialize;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(NON_NULL)
-@JsonNaming(SnakeCaseStrategy.class)
 class CompletionRequest {
 
     private String model;
     private String system;
     private String prompt;
     private Options options;
+    private Integer width;
+    private Integer height;
+    private Integer steps;
 
-    @JsonSerialize(using = FormatSerializer.class)
-    private String format;
+    private Object format;
 
     private Boolean stream;
 
     CompletionRequest() {}
 
-    CompletionRequest(String model, String system, String prompt, Options options, String format, Boolean stream) {
+    CompletionRequest(
+            String model,
+            String system,
+            String prompt,
+            Options options,
+            Integer width,
+            Integer height,
+            Integer steps,
+            Object format,
+            Boolean stream) {
         this.model = model;
         this.system = system;
         this.prompt = prompt;
         this.options = options;
+        this.width = width;
+        this.height = height;
+        this.steps = steps;
         this.format = format;
         this.stream = stream;
     }
@@ -70,11 +80,35 @@ class CompletionRequest {
         this.options = options;
     }
 
-    public String getFormat() {
+    public Integer getWidth() {
+        return width;
+    }
+
+    public void setWidth(Integer width) {
+        this.width = width;
+    }
+
+    public Integer getHeight() {
+        return height;
+    }
+
+    public void setHeight(Integer height) {
+        this.height = height;
+    }
+
+    public Integer getSteps() {
+        return steps;
+    }
+
+    public void setSteps(Integer steps) {
+        this.steps = steps;
+    }
+
+    public Object getFormat() {
         return format;
     }
 
-    public void setFormat(String format) {
+    public void setFormat(Object format) {
         this.format = format;
     }
 
@@ -92,7 +126,10 @@ class CompletionRequest {
         private String system;
         private String prompt;
         private Options options;
-        private String format;
+        private Integer width;
+        private Integer height;
+        private Integer steps;
+        private Object format;
         private Boolean stream;
 
         Builder model(String model) {
@@ -115,7 +152,22 @@ class CompletionRequest {
             return this;
         }
 
-        Builder format(String format) {
+        Builder width(Integer width) {
+            this.width = width;
+            return this;
+        }
+
+        Builder height(Integer height) {
+            this.height = height;
+            return this;
+        }
+
+        Builder steps(Integer steps) {
+            this.steps = steps;
+            return this;
+        }
+
+        Builder format(Object format) {
             this.format = format;
             return this;
         }
@@ -126,7 +178,7 @@ class CompletionRequest {
         }
 
         CompletionRequest build() {
-            return new CompletionRequest(model, system, prompt, options, format, stream);
+            return new CompletionRequest(model, system, prompt, options, width, height, steps, format, stream);
         }
     }
 }

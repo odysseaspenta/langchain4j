@@ -7,7 +7,6 @@ import static dev.langchain4j.internal.ValidationUtils.ensureNotNull;
 import static dev.langchain4j.model.googleai.GeminiResponseModality.IMAGE;
 import static java.util.Collections.singletonList;
 
-import com.fasterxml.jackson.core.type.TypeReference;
 import dev.langchain4j.Experimental;
 import dev.langchain4j.data.image.Image;
 import dev.langchain4j.http.client.HttpClientBuilder;
@@ -21,6 +20,7 @@ import dev.langchain4j.model.image.ImageModel;
 import dev.langchain4j.model.output.FinishReason;
 import dev.langchain4j.model.output.Response;
 import dev.langchain4j.model.output.TokenUsage;
+import java.lang.reflect.Type;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -105,7 +105,8 @@ public class GoogleAiGeminiImageModel implements ImageModel {
                 getOrDefault(builder.logRequests, false),
                 getOrDefault(builder.logResponses, false),
                 builder.logger,
-                builder.timeout);
+                builder.timeout,
+                null);
 
         this.modelName = ensureNotNull(builder.modelName, "modelName");
         this.maxRetries = getOrDefault(builder.maxRetries, 2);
@@ -227,10 +228,13 @@ public class GoogleAiGeminiImageModel implements ImageModel {
 
         TokenUsage tokenUsage = null;
         if (response.usageMetadata() != null) {
-            tokenUsage = new TokenUsage(
-                    response.usageMetadata().promptTokenCount(),
-                    response.usageMetadata().candidatesTokenCount(),
-                    response.usageMetadata().totalTokenCount());
+            tokenUsage = GoogleAiGeminiTokenUsage.builder()
+                    .inputTokenCount(response.usageMetadata().promptTokenCount())
+                    .outputTokenCount(response.usageMetadata().candidatesTokenCount())
+                    .totalTokenCount(response.usageMetadata().totalTokenCount())
+                    .cachedContentTokenCount(response.usageMetadata().cachedContentTokenCount())
+                    .thoughtsTokenCount(response.usageMetadata().thoughtsTokenCount())
+                    .build();
         }
 
         FinishReason finishReason = null;
@@ -246,7 +250,7 @@ public class GoogleAiGeminiImageModel implements ImageModel {
         }
 
         if (groundingMetadata != null) {
-            Map<String, Object> groundingMetadataMap = Json.convertValue(groundingMetadata, new TypeReference<>() {});
+            Map<String, Object> groundingMetadataMap = Json.convertValue(groundingMetadata, Map.class);
             metadata.put("groundingMetadata", groundingMetadataMap);
         }
 

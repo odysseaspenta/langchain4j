@@ -6,14 +6,17 @@ import static dev.langchain4j.internal.ValidationUtils.ensureNotNull;
 import static dev.langchain4j.service.AiServiceParamsUtil.chatRequestParameters;
 
 import dev.langchain4j.Internal;
+import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.ChatMessage;
+import dev.langchain4j.data.message.SystemMessage;
+import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.guardrail.ChatExecutor;
 import dev.langchain4j.guardrail.GuardrailRequestParams;
+import dev.langchain4j.invocation.CapturedContextSupport;
 import dev.langchain4j.invocation.InvocationContext;
 import dev.langchain4j.memory.ChatMemory;
 import dev.langchain4j.memory.chat.MessageWindowChatMemory;
 import dev.langchain4j.model.chat.request.ChatRequest;
-import dev.langchain4j.model.chat.request.ChatRequestParameters;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.chat.response.PartialResponse;
 import dev.langchain4j.model.chat.response.PartialResponseContext;
@@ -21,18 +24,18 @@ import dev.langchain4j.model.chat.response.PartialThinking;
 import dev.langchain4j.model.chat.response.PartialThinkingContext;
 import dev.langchain4j.model.chat.response.PartialToolCall;
 import dev.langchain4j.model.chat.response.PartialToolCallContext;
-import dev.langchain4j.agent.tool.ToolSpecification;
-import dev.langchain4j.model.output.TokenUsage;
 import dev.langchain4j.observability.api.event.AiServiceRequestIssuedEvent;
+import dev.langchain4j.observability.api.event.AiServiceStartedEvent;
 import dev.langchain4j.rag.content.Content;
 import dev.langchain4j.service.tool.BeforeToolExecution;
 import dev.langchain4j.service.tool.ToolArgumentsErrorHandler;
 import dev.langchain4j.service.tool.ToolExecution;
 import dev.langchain4j.service.tool.ToolExecutionErrorHandler;
-import dev.langchain4j.service.tool.ToolService;
 import dev.langchain4j.service.tool.ToolServiceContext;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
 
@@ -45,12 +48,14 @@ public class AiServiceTokenStream implements TokenStream {
     private final ToolArgumentsErrorHandler toolArgumentsErrorHandler;
     private final ToolExecutionErrorHandler toolExecutionErrorHandler;
     private final Executor toolExecutor;
+    private final Executor completeResponseProcessingExecutor;
 
     private final List<Content> retrievedContents;
     private final AiServiceContext context;
     private final InvocationContext invocationContext;
     private final GuardrailRequestParams commonGuardrailParams;
     private final Object methodKey;
+    private final AtomicBoolean startedBefore = new AtomicBoolean();
 
     private Consumer<String> partialResponseHandler;
     private BiConsumer<PartialResponse, PartialResponseContext> partialResponseWithContextHandler;
@@ -61,6 +66,7 @@ public class AiServiceTokenStream implements TokenStream {
     private Consumer<List<Content>> contentsHandler;
     private Consumer<ChatResponse> intermediateResponseHandler;
     private Consumer<BeforeToolExecution> beforeToolExecutionHandler;
+    private Consumer<Object> rawEventHandler;
     private Consumer<ToolExecution> toolExecutionHandler;
     private Consumer<ChatResponse> completeResponseHandler;
     private Consumer<Throwable> errorHandler;
@@ -75,6 +81,7 @@ public class AiServiceTokenStream implements TokenStream {
     private int onCompleteResponseInvoked;
     private int onRetrievedInvoked;
     private int beforeToolExecutionInvoked;
+    private int onUnmappedRawEventInvoked;
     private int onToolExecutedInvoked;
     private int onErrorInvoked;
     private int ignoreErrorsInvoked;
@@ -90,7 +97,9 @@ public class AiServiceTokenStream implements TokenStream {
         this.toolServiceContext = parameters.toolServiceContext();
         this.toolArgumentsErrorHandler = parameters.toolArgumentsErrorHandler();
         this.toolExecutionErrorHandler = parameters.toolExecutionErrorHandler();
-        this.toolExecutor = parameters.toolExecutor();
+        this.toolExecutor = CapturedContextSupport.restoringIn(parameters.toolExecutor(), parameters.invocationContext());
+        this.completeResponseProcessingExecutor = CapturedContextSupport.restoringIn(
+                parameters.completeResponseProcessingExecutor(), parameters.invocationContext());
         this.retrievedContents = copy(parameters.retrievedContents());
         this.context = ensureNotNull(parameters.context(), "context");
         ensureNotNull(this.context.streamingChatModel, "streamingChatModel");
@@ -163,6 +172,13 @@ public class AiServiceTokenStream implements TokenStream {
     }
 
     @Override
+    public TokenStream onUnmappedRawEvent(Consumer<Object> rawEventHandler) {
+        this.rawEventHandler = rawEventHandler;
+        this.onUnmappedRawEventInvoked++;
+        return this;
+    }
+
+    @Override
     public TokenStream onToolExecuted(Consumer<ToolExecution> toolExecutionHandler) {
         this.toolExecutionHandler = toolExecutionHandler;
         this.onToolExecutedInvoked++;
@@ -192,23 +208,37 @@ public class AiServiceTokenStream implements TokenStream {
 
     @Override
     public void start() {
-        validateConfiguration();
+        boolean startedAgain = startedBefore.getAndSet(true);
+        InvocationContext runContext = startedAgain ? newRunContext() : invocationContext;
+        try {
+            if (startedAgain) {
+                fireStartedEvent(runContext);
+            }
+            validateConfiguration();
+            start(runContext);
+        } catch (VirtualMachineError e) {
+            throw e;
+        } catch (Throwable t) {
+            TerminalEvents.fireError(context.eventListenerRegistrar, runContext, t);
+            throw t;
+        }
+    }
 
-        List<ToolSpecification> effectiveTools = toolServiceContext != null
-                ? toolServiceContext.effectiveTools()
-                : null;
+    private void start(InvocationContext runContext) {
+        List<ToolSpecification> effectiveTools =
+                toolServiceContext != null ? toolServiceContext.effectiveTools() : null;
 
         ChatRequest chatRequest = context.chatRequestTransformer.apply(
                 ChatRequest.builder()
                         .messages(messages)
-                        .parameters(chatRequestParameters(invocationContext.methodArguments(), effectiveTools))
+                        .parameters(chatRequestParameters(runContext.methodArguments(), effectiveTools))
                         .build(),
-                invocationContext.chatMemoryId());
+                runContext.chatMemoryId());
 
         ChatExecutor chatExecutor = ChatExecutor.builder(context.streamingChatModel)
                 .errorHandler(errorHandler)
                 .chatRequest(chatRequest)
-                .invocationContext(invocationContext)
+                .invocationContext(runContext)
                 .eventListenerRegistrar(context.eventListenerRegistrar)
                 .build();
 
@@ -216,7 +246,7 @@ public class AiServiceTokenStream implements TokenStream {
                 chatRequest,
                 chatExecutor,
                 context,
-                invocationContext,
+                runContext,
                 partialResponseHandler,
                 partialResponseWithContextHandler,
                 partialThinkingHandler,
@@ -224,18 +254,20 @@ public class AiServiceTokenStream implements TokenStream {
                 partialToolCallHandler,
                 partialToolCallWithContextHandler,
                 beforeToolExecutionHandler,
+                rawEventHandler,
                 toolExecutionHandler,
                 intermediateResponseHandler,
                 completeResponseHandler,
                 errorHandler,
                 initTemporaryMemory(context, messages),
-                new TokenUsage(),
+                null,
                 toolServiceContext,
-                context.toolService.maxSequentialToolsInvocations(),
+                context.toolService.maxToolCallingRoundTrips(),
                 toolArgumentsErrorHandler,
                 toolExecutionErrorHandler,
                 toolExecutor,
-                commonGuardrailParams,
+                completeResponseProcessingExecutor,
+                guardrailParams(runContext),
                 methodKey);
 
         if (contentsHandler != null && retrievedContents != null) {
@@ -243,11 +275,41 @@ public class AiServiceTokenStream implements TokenStream {
         }
 
         context.eventListenerRegistrar.fireEvent(AiServiceRequestIssuedEvent.builder()
-                .invocationContext(invocationContext)
+                .invocationContext(runContext)
                 .request(chatRequest)
                 .build());
 
         context.streamingChatModel.chat(chatRequest, handler);
+    }
+
+    private GuardrailRequestParams guardrailParams(InvocationContext runContext) {
+        if (commonGuardrailParams == null || runContext == invocationContext) {
+            return commonGuardrailParams;
+        }
+        return commonGuardrailParams.toBuilder().invocationContext(runContext).build();
+    }
+
+    private InvocationContext newRunContext() {
+        return invocationContext.toBuilder()
+                .invocationId(UUID.randomUUID())
+                .timestampNow()
+                .build();
+    }
+
+    private void fireStartedEvent(InvocationContext runContext) {
+        UserMessage userMessage = invocationContext.originalUserMessage() != null
+                ? invocationContext.originalUserMessage()
+                : UserMessage.findLast(messages).orElse(null);
+        if (userMessage == null) {
+            return;
+        }
+        SystemMessage systemMessage =
+                !messages.isEmpty() && messages.get(0) instanceof SystemMessage message ? message : null;
+        context.eventListenerRegistrar.fireEvent(AiServiceStartedEvent.builder()
+                .invocationContext(runContext)
+                .systemMessage(systemMessage)
+                .userMessage(userMessage)
+                .build());
     }
 
     private void validateConfiguration() {
@@ -275,6 +337,9 @@ public class AiServiceTokenStream implements TokenStream {
         }
         if (beforeToolExecutionInvoked > 1) {
             throw new IllegalConfigurationException("beforeToolExecution can be invoked on TokenStream at most 1 time");
+        }
+        if (onUnmappedRawEventInvoked > 1) {
+            throw new IllegalConfigurationException("onUnmappedRawEvent can be invoked on TokenStream at most 1 time");
         }
         if (onToolExecutedInvoked > 1) {
             throw new IllegalConfigurationException("onToolExecuted can be invoked on TokenStream at most 1 time");

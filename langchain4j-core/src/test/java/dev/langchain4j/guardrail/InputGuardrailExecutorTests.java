@@ -8,7 +8,12 @@ import static org.mockito.Mockito.verify;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.guardrail.config.InputGuardrailsConfig;
 import dev.langchain4j.invocation.InvocationContext;
+import dev.langchain4j.observability.api.AiServiceListenerRegistrar;
+import dev.langchain4j.observability.api.event.InputGuardrailExecutedEvent;
+import dev.langchain4j.observability.api.listener.InputGuardrailExecutedListener;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.Test;
@@ -69,6 +74,128 @@ class InputGuardrailExecutorTests {
         var result = executor.execute(request);
 
         assertThat(result).isSuccessful();
+    }
+
+    @Test
+    void executeAsync_cancellation_aborts_the_in_flight_guardrail_validation() {
+        // a guardrail whose async validation never completes, so we can cancel it while in flight
+        var pending = new CompletableFuture<InputGuardrailResult>();
+        var blockingAsyncGuardrail = new InputGuardrail() {
+            @Override
+            public InputGuardrailResult validate(InputGuardrailRequest request) {
+                throw new UnsupportedOperationException("blocking path not used in this test");
+            }
+
+            @Override
+            public CompletableFuture<InputGuardrailResult> validateAsync(InputGuardrailRequest request) {
+                return pending;
+            }
+        };
+
+        var executor =
+                InputGuardrailExecutor.builder().guardrails(blockingAsyncGuardrail).build();
+
+        var future = executor.executeAsync(from(UserMessage.from("test")));
+
+        org.assertj.core.api.Assertions.assertThat(future).isNotDone();
+        org.assertj.core.api.Assertions.assertThat(pending).isNotDone();
+
+        future.cancel(true);
+
+        // cancelling the caller-facing future aborts the in-flight guardrail validation (best-effort)
+        org.assertj.core.api.Assertions.assertThat(pending).isCancelled();
+    }
+
+    @Test
+    void wrappedGuardrailShouldUseInnerGuardrailNameInObservabilityEvent() {
+        var eventRef = new AtomicReference<InputGuardrailExecutedEvent>();
+        var registrar = AiServiceListenerRegistrar.newInstance();
+        registrar.register((InputGuardrailExecutedListener) eventRef::set);
+
+        var request = InputGuardrailRequest.builder()
+                .userMessage(UserMessage.from("test"))
+                .commonParams(GuardrailRequestParams.builder()
+                        .chatMemory(null)
+                        .augmentationResult(null)
+                        .userMessageTemplate("")
+                        .variables(Map.of())
+                        .invocationContext(DEFAULT_INVOCATION_CONTEXT)
+                        .aiServiceListenerRegistrar(registrar)
+                        .build())
+                .build();
+
+        var executor = InputGuardrailExecutor.builder()
+                .guardrails(new WrappedInputGuardrail(new InnerFailingInputGuardrail()))
+                .config(InputGuardrailsConfig.builder().build())
+                .build();
+
+        assertThatExceptionOfType(InputGuardrailException.class).isThrownBy(() -> executor.execute(request));
+
+        assertThat(eventRef.get()).isNotNull();
+        assertThat(eventRef.get().guardrailClass()).isEqualTo(WrappedInputGuardrail.class);
+        assertThat(eventRef.get().guardrailName()).isEqualTo(InnerFailingInputGuardrail.class.getSimpleName());
+    }
+
+    @Test
+    void wrappedGuardrailShouldUseInnerGuardrailNameInObservabilityEventOnSuccess() {
+        var eventRef = new AtomicReference<InputGuardrailExecutedEvent>();
+        var registrar = AiServiceListenerRegistrar.newInstance();
+        registrar.register((InputGuardrailExecutedListener) eventRef::set);
+
+        var request = InputGuardrailRequest.builder()
+                .userMessage(UserMessage.from("test"))
+                .commonParams(GuardrailRequestParams.builder()
+                        .chatMemory(null)
+                        .augmentationResult(null)
+                        .userMessageTemplate("")
+                        .variables(Map.of())
+                        .invocationContext(DEFAULT_INVOCATION_CONTEXT)
+                        .aiServiceListenerRegistrar(registrar)
+                        .build())
+                .build();
+
+        var executor = InputGuardrailExecutor.builder()
+                .guardrails(new WrappedInputGuardrail(new InnerSuccessInputGuardrail()))
+                .config(InputGuardrailsConfig.builder().build())
+                .build();
+
+        var result = executor.execute(request);
+
+        assertThat(result).isSuccessful();
+        assertThat(eventRef.get()).isNotNull();
+        assertThat(eventRef.get().guardrailClass()).isEqualTo(WrappedInputGuardrail.class);
+        assertThat(eventRef.get().guardrailName()).isEqualTo(InnerSuccessInputGuardrail.class.getSimpleName());
+    }
+
+    @Test
+    void shouldFallbackToClassNameWhenNoCustomNameProvided() {
+        var eventRef = new AtomicReference<InputGuardrailExecutedEvent>();
+        var registrar = AiServiceListenerRegistrar.newInstance();
+        registrar.register((InputGuardrailExecutedListener) eventRef::set);
+
+        var request = InputGuardrailRequest.builder()
+                .userMessage(UserMessage.from("test"))
+                .commonParams(GuardrailRequestParams.builder()
+                        .chatMemory(null)
+                        .augmentationResult(null)
+                        .userMessageTemplate("")
+                        .variables(Map.of())
+                        .invocationContext(DEFAULT_INVOCATION_CONTEXT)
+                        .aiServiceListenerRegistrar(registrar)
+                        .build())
+                .build();
+
+        var executor = InputGuardrailExecutor.builder()
+                .guardrails(new InnerSuccessInputGuardrail())
+                .config(InputGuardrailsConfig.builder().build())
+                .build();
+
+        var result = executor.execute(request);
+
+        assertThat(result).isSuccessful();
+        assertThat(eventRef.get()).isNotNull();
+        assertThat(eventRef.get().guardrailClass()).isEqualTo(InnerSuccessInputGuardrail.class);
+        assertThat(eventRef.get().guardrailName()).isEqualTo(InnerSuccessInputGuardrail.class.getSimpleName());
     }
 
     @ParameterizedTest(name = "{0}")
@@ -258,6 +385,39 @@ class InputGuardrailExecutorTests {
         @Override
         public InputGuardrailResult validate(final UserMessage userMessage) {
             return InputGuardrailResult.success();
+        }
+    }
+
+    private static class InnerFailingInputGuardrail implements InputGuardrail {
+        @Override
+        public InputGuardrailResult validate(UserMessage userMessage) {
+            return failure("wrapped failure");
+        }
+    }
+
+    private static class InnerSuccessInputGuardrail implements InputGuardrail {
+        @Override
+        public InputGuardrailResult validate(UserMessage userMessage) {
+            return success();
+        }
+    }
+
+    private static class WrappedInputGuardrail implements InputGuardrail {
+
+        private final InputGuardrail delegate;
+
+        private WrappedInputGuardrail(InputGuardrail delegate) {
+            this.delegate = delegate;
+        }
+
+        @Override
+        public String name() {
+            return delegate.name();
+        }
+
+        @Override
+        public InputGuardrailResult validate(InputGuardrailRequest request) {
+            return delegate.validate(request);
         }
     }
 

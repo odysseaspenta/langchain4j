@@ -14,10 +14,10 @@ import dev.langchain4j.model.TokenCountEstimator;
 import dev.langchain4j.service.memory.ChatMemoryService;
 import dev.langchain4j.store.memory.chat.ChatMemoryStore;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Optional;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Function;
 
 /**
@@ -72,12 +72,38 @@ public class TokenWindowChatMemory implements ChatMemory {
     @Override
     public void add(ChatMessage message) {
         List<ChatMessage> messages = messages();
+        if (appendMessage(messages, message)) {
+            store.updateMessages(id, messages);
+        }
+    }
 
+    @Override
+    public CompletableFuture<Void> addAsync(List<ChatMessage> messagesToAdd) {
+        return store.getMessagesAsync(id).thenCompose(stored -> {
+            List<ChatMessage> messages = windowed(stored);
+            boolean changed = false;
+            for (ChatMessage message : messagesToAdd) {
+                changed |= appendMessage(messages, message);
+            }
+            if (changed) {
+                return store.updateMessagesAsync(id, messages);
+            }
+            return CompletableFuture.completedFuture(null);
+        });
+    }
+
+    /**
+     * Appends {@code message} to {@code messages} applying the sliding-window and {@link SystemMessage} rules.
+     *
+     * @return {@code true} if the messages were modified and should be persisted, {@code false} if the message was
+     *         ignored (a {@code SystemMessage} identical to the existing one).
+     */
+    private boolean appendMessage(List<ChatMessage> messages, ChatMessage message) {
         if (message instanceof SystemMessage) {
             Optional<SystemMessage> maybeSystemMessage = SystemMessage.findFirst(messages);
             if (maybeSystemMessage.isPresent()) {
                 if (maybeSystemMessage.get().equals(message)) {
-                    return; // do not add the same system message
+                    return false; // do not add the same system message
                 } else {
                     messages.remove(maybeSystemMessage.get()); // need to replace existing system message
                 }
@@ -94,7 +120,7 @@ public class TokenWindowChatMemory implements ChatMemory {
         ensureGreaterThanZero(maxTokens, "maxTokens");
         ensureCapacity(messages, maxTokens, tokenCountEstimator);
 
-        store.updateMessages(id, messages);
+        return true;
     }
 
     @Override
@@ -111,15 +137,40 @@ public class TokenWindowChatMemory implements ChatMemory {
     private void set(List<ChatMessage> messages) {
         Integer maxTokens = maxTokensProvider.apply(id);
         ensureGreaterThanZero(maxTokens, "maxTokens");
+        messages = new ArrayList<>(messages);
         ensureCapacity(messages, maxTokens, tokenCountEstimator);
         store.updateMessages(id, messages);
     }
 
     @Override
+    public CompletableFuture<Void> setAsync(List<ChatMessage> messages) {
+        // Deliver validation/windowing failures through the returned stage rather than throwing synchronously,
+        // consistent with addAsync and the async error contract.
+        try {
+            Integer maxTokens = maxTokensProvider.apply(id);
+            ensureGreaterThanZero(maxTokens, "maxTokens");
+            List<ChatMessage> windowed = new ArrayList<>(messages);
+            ensureCapacity(windowed, maxTokens, tokenCountEstimator);
+            return store.updateMessagesAsync(id, windowed);
+        } catch (Throwable t) {
+            return CompletableFuture.failedFuture(t);
+        }
+    }
+
+    @Override
     public List<ChatMessage> messages() {
+        return windowed(store.getMessages(id));
+    }
+
+    @Override
+    public CompletableFuture<List<ChatMessage>> messagesAsync() {
+        return store.getMessagesAsync(id).thenApply(this::windowed);
+    }
+
+    private List<ChatMessage> windowed(List<ChatMessage> stored) {
         Integer maxTokens = maxTokensProvider.apply(id);
         ensureGreaterThanZero(maxTokens, "maxTokens");
-        List<ChatMessage> messages = new LinkedList<>(store.getMessages(id));
+        List<ChatMessage> messages = new LinkedList<>(stored);
         ensureCapacity(messages, maxTokens, tokenCountEstimator);
         return messages;
     }

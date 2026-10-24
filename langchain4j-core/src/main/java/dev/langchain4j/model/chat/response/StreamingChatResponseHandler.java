@@ -5,8 +5,14 @@ import dev.langchain4j.model.chat.StreamingChatModel;
 
 /**
  * Represents a handler for a {@link StreamingChatModel} response.
+ * <p>
+ * To be able to cancel the streaming, implement the callbacks that accept a context,
+ * such as {@link #onPartialResponse(PartialResponse, PartialResponseContext)},
+ * and call {@code context.streamingHandle().cancel()}.
+ * See {@link StreamingHandle} for details.
  *
  * @see StreamingChatModel
+ * @see StreamingHandle
  */
 public interface StreamingChatResponseHandler {
 
@@ -18,6 +24,9 @@ public interface StreamingChatResponseHandler {
      * <p>
      * Either this or the {@link #onPartialResponse(PartialResponse, PartialResponseContext)} method
      * should be implemented if you want to consume tokens as soon as they become available.
+     * <p>
+     * This method does not provide a {@link StreamingHandle}, so the streaming cannot be cancelled from it.
+     * Implement {@link #onPartialResponse(PartialResponse, PartialResponseContext)} instead if you need to cancel.
      *
      * @param partialResponse A partial textual response, usually a single token.
      * @see #onPartialResponse(PartialResponse, PartialResponseContext)
@@ -52,6 +61,9 @@ public interface StreamingChatResponseHandler {
      * <p>
      * Either this or the {@link #onPartialThinking(PartialThinking, PartialThinkingContext)} method
      * should be implemented if you want to consume thinking tokens as soon as they become available.
+     * <p>
+     * This method does not provide a {@link StreamingHandle}, so the streaming cannot be cancelled from it.
+     * Implement {@link #onPartialThinking(PartialThinking, PartialThinkingContext)} instead if you need to cancel.
      *
      * @param partialThinking A partial thinking text, usually a single token.
      * @see #onPartialThinking(PartialThinking, PartialThinkingContext)
@@ -107,6 +119,9 @@ public interface StreamingChatResponseHandler {
      * <p>
      * Either this or the {@link #onPartialToolCall(PartialToolCall, PartialToolCallContext)} method
      * should be implemented if you want to consume partial tool calls as soon as they become available.
+     * <p>
+     * This method does not provide a {@link StreamingHandle}, so the streaming cannot be cancelled from it.
+     * Implement {@link #onPartialToolCall(PartialToolCall, PartialToolCallContext)} instead if you need to cancel.
      *
      * @param partialToolCall A partial tool call that contains
      *                        the index, tool ID, tool name and partial arguments.
@@ -165,6 +180,28 @@ public interface StreamingChatResponseHandler {
      */
     @Experimental
     default void onCompleteToolCall(CompleteToolCall completeToolCall) {}
+
+    /**
+     * Invoked when a provider emits a raw streaming event that is <b>not</b> already exposed through one of the
+     * typed callbacks (such as {@link #onPartialResponse(PartialResponse, PartialResponseContext)},
+     * {@link #onPartialThinking(PartialThinking, PartialThinkingContext)},
+     * {@link #onPartialToolCall(PartialToolCall, PartialToolCallContext)} or
+     * {@link #onCompleteToolCall(CompleteToolCall)}).
+     * <p>
+     * This acts as an escape hatch for provider-specific events that langchain4j does not model, such as
+     * server-tool lifecycle events (e.g., OpenAI's {@code web_search_call.in_progress}). Events that are already
+     * delivered as partial responses, thinking or tool calls are not repeated here.
+     * <p>
+     * The event type depends on the provider implementation. Implementations using the
+     * {@code dev.langchain4j.http.client.HttpClient} abstraction (e.g., OpenAI, Anthropic, Google AI Gemini)
+     * typically expose {@code ServerSentEvent}; other implementations can expose provider-specific event objects
+     * (e.g., the OpenAI official Responses model exposes the SDK's {@code ResponseStreamEvent}).
+     *
+     * @param rawEvent A raw provider streaming event.
+     * @since 1.17.0
+     */
+    @Experimental
+    default void onUnmappedRawEvent(Object rawEvent) {}
 
     /**
      * Invoked when the model has finished streaming a response.

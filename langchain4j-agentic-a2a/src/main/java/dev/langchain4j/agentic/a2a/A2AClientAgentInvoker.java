@@ -1,29 +1,34 @@
 package dev.langchain4j.agentic.a2a;
 
+import static dev.langchain4j.agentic.internal.AgentUtil.agentInvocationArguments;
+import static dev.langchain4j.agentic.internal.AgentUtil.argumentsFromMethod;
+import static dev.langchain4j.agentic.internal.AgentUtil.untypedAgentInvocationArguments;
+
 import dev.langchain4j.agentic.UntypedAgent;
+import dev.langchain4j.agentic.agent.MissingArgumentException;
+import dev.langchain4j.agentic.internal.AgentInvocationArguments;
+import dev.langchain4j.agentic.internal.AgentInvoker;
 import dev.langchain4j.agentic.internal.InternalAgent;
 import dev.langchain4j.agentic.observability.AgentListener;
-import dev.langchain4j.agentic.internal.AgentInvocationArguments;
 import dev.langchain4j.agentic.planner.AgentArgument;
+import dev.langchain4j.agentic.planner.AgentCondition;
 import dev.langchain4j.agentic.planner.AgentInstance;
 import dev.langchain4j.agentic.planner.AgenticSystemTopology;
 import dev.langchain4j.agentic.planner.Planner;
 import dev.langchain4j.agentic.scope.AgenticScope;
-import dev.langchain4j.agentic.internal.AgentInvoker;
-import io.a2a.spec.AgentCard;
+import dev.langchain4j.service.ParameterNameResolver;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
-
-import static dev.langchain4j.agentic.observability.ComposedAgentListener.composeWithInherited;
+import org.a2aproject.sdk.spec.AgentCard;
 
 public class A2AClientAgentInvoker implements AgentInvoker {
 
     private String agentId;
-    private final String[] inputKeys;
+    private final List<AgentArgument> arguments;
 
     private final A2AClientInstance a2AClientInstance;
 
@@ -37,15 +42,51 @@ public class A2AClientAgentInvoker implements AgentInvoker {
         this.a2AClientInstance = a2AClientInstance;
         this.agentCard = a2AClientInstance.agentCard();
         this.agentId = name();
-        this.inputKeys = inputKeys(a2AClientInstance);
+        this.arguments = arguments(a2AClientInstance);
     }
 
-    private String[] inputKeys(A2AClientInstance a2AClientInstance) {
-        return isUntyped()
-                ? a2AClientInstance.inputKeys()
-                : Stream.of(method.getParameters())
-                        .map(AgentInvoker::parameterName)
-                        .toArray(String[]::new);
+    /**
+     * Builds the argument list for the agent method.
+     *
+     * <p>All three A2A protocol annotation types ({@link A2ATenantId}, {@link A2AContextId},
+     * {@link A2ATaskId}) are marked optional so they resolve gracefully at invocation time:
+     * context and task IDs fall back to {@code null} when absent from scope; a tenant arg
+     * falls back to its {@code defaultValue} when absent from scope.
+     *
+     * <p>When a tenant is pre-configured on the client, the tenant arg is mapped to an
+     * {@link AgentArgument} carrying the configured value as its {@code defaultValue}.
+     * The arg is intentionally kept in the list: removing it would shorten the positional
+     * array and cause {@link java.lang.reflect.Method#invoke} to fail with a wrong argument
+     * count. The pre-configured value is used at invocation time unless the scope already
+     * contains a value for that argument, in which case the scope value takes precedence.
+     */
+    private List<AgentArgument> arguments(A2AClientInstance a2AClientInstance) {
+        if (isUntyped()) {
+            return Stream.of(a2AClientInstance.inputKeys())
+                    .map(input -> new AgentArgument(Object.class, input))
+                    .toList();
+        }
+        Set<String> tenantArgNames = Stream.of(method.getParameters())
+                .filter(p -> p.isAnnotationPresent(A2ATenantId.class) && ParameterNameResolver.hasName(p))
+                .map(ParameterNameResolver::name)
+                .collect(Collectors.toSet());
+        Set<String> optionalProtocolArgs = Stream.concat(
+                        tenantArgNames.stream(),
+                        Stream.of(method.getParameters())
+                                .filter(p -> (p.isAnnotationPresent(A2AContextId.class)
+                                                || p.isAnnotationPresent(A2ATaskId.class))
+                                        && ParameterNameResolver.hasName(p))
+                                .map(ParameterNameResolver::name))
+                .collect(Collectors.toSet());
+        if (a2AClientInstance.tenant() != null) {
+            String configuredTenant = a2AClientInstance.tenant();
+            return argumentsFromMethod(method, optionalProtocolArgs).stream()
+                    .map(arg -> tenantArgNames.contains(arg.name())
+                            ? new AgentArgument(arg.type(), arg.name(), configuredTenant, true, arg.description())
+                            : arg)
+                    .toList();
+        }
+        return argumentsFromMethod(method, optionalProtocolArgs);
     }
 
     @Override
@@ -94,8 +135,13 @@ public class A2AClientAgentInvoker implements AgentInvoker {
     }
 
     @Override
+    public AgentCondition activationCondition() {
+        return a2AClientInstance.activationCondition();
+    }
+
+    @Override
     public List<AgentArgument> arguments() {
-        return Stream.of(inputKeys).map(input -> new AgentArgument(Object.class, input)).toList();
+        return arguments;
     }
 
     @Override
@@ -105,22 +151,15 @@ public class A2AClientAgentInvoker implements AgentInvoker {
 
     @Override
     public AgentInvocationArguments toInvocationArguments(AgenticScope agenticScope) {
-        return isUntyped()
-                ? new AgentInvocationArguments(agenticScope.state(), new Object[] {agenticScope.state()})
-                : agentInvocationArguments(agenticScope);
-    }
-
-    private AgentInvocationArguments agentInvocationArguments(AgenticScope agenticScope) {
-        Map<String, Object> namedArgs = new HashMap<>();
-        Object[] positionalArgs = new Object[inputKeys.length];
-
-        int i = 0;
-        for (String argName : inputKeys) {
-            Object argValue = agenticScope.readState(argName);
-            positionalArgs[i++] = argValue;
-            namedArgs.put(argName, argValue);
+        if (isUntyped()) {
+            for (AgentArgument argument : arguments) {
+                if (!argument.isOptional() && agenticScope.readState(argument.name()) == null) {
+                    throw new MissingArgumentException(argument.name());
+                }
+            }
+            return untypedAgentInvocationArguments(agenticScope);
         }
-        return new AgentInvocationArguments(namedArgs, positionalArgs);
+        return agentInvocationArguments(agenticScope, arguments);
     }
 
     private boolean isUntyped() {
@@ -146,6 +185,7 @@ public class A2AClientAgentInvoker implements AgentInvoker {
     public void setParent(InternalAgent parent) {
         this.parent = parent;
     }
+
     @Override
     public void registerInheritedParentListener(AgentListener parentListener) {
         a2AClientInstance.registerInheritedParentListener(parentListener);

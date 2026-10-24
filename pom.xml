@@ -4,7 +4,7 @@
 
     <groupId>dev.langchain4j</groupId>
     <artifactId>langchain4j-aggregator</artifactId>
-    <version>1.13.0-beta23-SNAPSHOT</version>
+    <version>1.23.0-beta33-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>LangChain4j :: Aggregator</name>
 
@@ -14,6 +14,9 @@
         <module>langchain4j-bom</module>
 
         <module>langchain4j-core</module>
+        <module>langchain4j-core-jackson3</module>
+        <module>langchain4j-jackson3</module>
+        <module>langchain4j-reactive-streaming</module>
         <module>langchain4j-test</module>
         <module>langchain4j</module>
         <module>langchain4j-kotlin</module>
@@ -26,6 +29,7 @@
         <module>langchain4j-http-client</module>
         <module>http-clients/langchain4j-http-client-jdk</module>
         <module>http-clients/langchain4j-http-client-apache</module>
+        <module>http-clients/langchain4j-http-client-okhttp</module>
 
         <!-- model providers -->
         <module>langchain4j-anthropic</module>
@@ -42,8 +46,9 @@
         <module>langchain4j-ovh-ai</module>
         <module>langchain4j-open-ai</module>
         <module>langchain4j-open-ai-official</module>
-        <module>langchain4j-github-models</module>
         <module>langchain4j-google-ai-gemini</module>
+        <module>langchain4j-google-genai</module>
+        <module>langchain4j-typesafe</module>
         <module>langchain4j-vertex-ai</module>
         <module>langchain4j-vertex-ai-gemini</module>
         <module>langchain4j-vertex-ai-anthropic</module>
@@ -68,6 +73,7 @@
         <module>langchain4j-azure-ai-search</module>
         <module>langchain4j-azure-cosmos-mongo-vcore</module>
         <module>langchain4j-azure-cosmos-nosql</module>
+        <module>langchain4j-azure-documentdb</module>
         <module>langchain4j-cassandra</module>
         <module>langchain4j-chroma</module>
         <module>langchain4j-coherence</module>
@@ -77,6 +83,7 @@
         <module>langchain4j-infinispan</module>
         <module>langchain4j-mariadb</module>
         <module>langchain4j-milvus</module>
+        <module>langchain4j-milvus-v2</module>
         <module>langchain4j-mongodb-atlas</module>
         <module>langchain4j-oracle</module>
         <module>langchain4j-opensearch</module>
@@ -100,6 +107,7 @@
         <module>document-parsers/langchain4j-document-parser-apache-pdfbox</module>
         <module>document-parsers/langchain4j-document-parser-apache-poi</module>
         <module>document-parsers/langchain4j-document-parser-apache-tika</module>
+        <module>document-parsers/langchain4j-document-parser-docling</module>
         <module>document-parsers/langchain4j-document-parser-markdown</module>
         <module>document-parsers/langchain4j-document-parser-yaml</module>
 
@@ -145,8 +153,8 @@
     </modules>
 
     <properties>
-        <langchain4j.stable.version>1.13.0-SNAPSHOT</langchain4j.stable.version>
-        <langchain4j.beta.version>1.13.0-beta23-SNAPSHOT</langchain4j.beta.version>
+        <langchain4j.stable.version>1.23.0-SNAPSHOT</langchain4j.stable.version>
+        <langchain4j.beta.version>1.23.0-beta33-SNAPSHOT</langchain4j.beta.version>
         <gib.disable>true</gib.disable>
     </properties>
 
@@ -164,7 +172,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
-                <version>3.5.0</version>
+                <version>3.12.0</version>
                 <executions>
                     <execution>
                         <id>attach-javadocs</id>
@@ -201,7 +209,7 @@
             <extension>
                 <groupId>io.github.gitflow-incremental-builder</groupId>
                 <artifactId>gitflow-incremental-builder</artifactId>
-                <version>4.0.0</version>
+                <version>4.6.0</version>
             </extension>
         </extensions>
     </build>
@@ -211,7 +219,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
-                <version>3.5.0</version>
+                <version>3.12.0</version>
                 <reportSets>
                     <reportSet>
                         <id>aggregate</id>
@@ -243,6 +251,7 @@
             </activation>
             <modules>
                 <module>langchain4j-jlama</module>
+                <module>langchain4j-jitllm</module>
             </modules>
         </profile>
 

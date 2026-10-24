@@ -9,6 +9,7 @@ import java.lang.annotation.Target;
 /**
  * Marks a method as an exit predicate for a loop in a loop-based agent.
  * The method must be static and return a boolean indicating whether the loop should exit.
+ * It can also declare parameters resolved through a {@link SupplierParameterResolver}.
  * <p>
  * Example:
  * <pre>
@@ -18,11 +19,7 @@ import java.lang.annotation.Target;
  *         @LoopAgent(
  *                 description = "Review the given story to ensure it aligns with the specified style",
  *                 outputKey = "story", maxIterations = 5,
- *                 subAgents = {
- *                     @SubAgent(type = StyleScorer.class, outputKey = "score"),
- *                     @SubAgent(type = StyleEditor.class, outputKey = "story")
- *             }
- *         )
+ *                 subAgents = { StyleScorer.class, StyleEditor.class })
  *         String write(@V("story") String story);
  *
  *         @ExitCondition(testExitAtLoopEnd = true, description = "score greater than 0.8")

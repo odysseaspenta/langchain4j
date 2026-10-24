@@ -1,24 +1,26 @@
 package dev.langchain4j.store.embedding.chroma;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import com.fasterxml.jackson.databind.SerializationFeature;
+import static dev.langchain4j.internal.Utils.getOrDefault;
+
 import dev.langchain4j.Internal;
 import dev.langchain4j.exception.HttpException;
 import dev.langchain4j.http.client.HttpClient;
+import dev.langchain4j.http.client.HttpClientBuilder;
+import dev.langchain4j.http.client.HttpClientBuilderLoader;
 import dev.langchain4j.http.client.HttpMethod;
 import dev.langchain4j.http.client.HttpRequest;
 import dev.langchain4j.http.client.SuccessfulHttpResponse;
 import dev.langchain4j.http.client.log.LoggingHttpClient;
+import dev.langchain4j.internal.Json;
 import dev.langchain4j.internal.Utils;
+import dev.langchain4j.internal.ProviderJson;
+import dev.langchain4j.internal.ProviderJsonSpec;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.time.Duration;
 import java.util.Map;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,23 +30,39 @@ class ChromaHttpClient {
     private static final Logger log = LoggerFactory.getLogger(ChromaHttpClient.class);
 
     private final HttpClient httpClient;
-    private final ObjectMapper objectMapper;
+    private final Json.JsonCodec codec;
     private final String baseUrl;
+    private final Supplier<Map<String, String>> customHeadersSupplier;
 
     public ChromaHttpClient(String baseUrl, Duration timeout, boolean logRequests, boolean logResponses) {
+        this(baseUrl, timeout, logRequests, logResponses, null, null);
+    }
+
+    public ChromaHttpClient(
+            String baseUrl,
+            Duration timeout,
+            boolean logRequests,
+            boolean logResponses,
+            HttpClientBuilder httpClientBuilder,
+            Supplier<Map<String, String>> customHeadersSupplier) {
         this.baseUrl = Utils.ensureTrailingForwardSlash(baseUrl);
-        dev.langchain4j.http.client.HttpClientBuilder httpClientBuilder =
-                dev.langchain4j.http.client.HttpClientBuilderLoader.loadHttpClientBuilder();
+        HttpClientBuilder clientBuilder =
+                httpClientBuilder == null ? HttpClientBuilderLoader.loadHttpClientBuilder() : httpClientBuilder;
         // Configure HTTP/1.1 for Chroma compatibility if using JDK HTTP client
         if ("dev.langchain4j.http.client.jdk.JdkHttpClientBuilder"
-                .equals(httpClientBuilder.getClass().getCanonicalName())) {
+                .equals(clientBuilder.getClass().getCanonicalName())) {
             try {
-                Method method = httpClientBuilder
-                        .getClass()
-                        .getMethod("httpClientBuilder", java.net.http.HttpClient.Builder.class);
-                method.invoke(
-                        httpClientBuilder,
-                        java.net.http.HttpClient.newBuilder()
+                Method getter = clientBuilder.getClass().getMethod("httpClientBuilder");
+                Method setter =
+                        clientBuilder.getClass().getMethod("httpClientBuilder", java.net.http.HttpClient.Builder.class);
+                java.net.http.HttpClient.Builder jdkHttpClientBuilder =
+                        (java.net.http.HttpClient.Builder) getter.invoke(clientBuilder);
+                if (jdkHttpClientBuilder == null) {
+                    jdkHttpClientBuilder = java.net.http.HttpClient.newBuilder();
+                }
+                setter.invoke(
+                        clientBuilder,
+                        jdkHttpClientBuilder
                                 .connectTimeout(timeout)
                                 .version(java.net.http.HttpClient.Version.HTTP_1_1));
             } catch (NoSuchMethodException
@@ -56,13 +74,14 @@ class ChromaHttpClient {
         }
 
         this.httpClient = new LoggingHttpClient(
-                httpClientBuilder.connectTimeout(timeout).readTimeout(timeout).build(), logRequests, logResponses);
+                clientBuilder.connectTimeout(timeout).readTimeout(timeout).build(), logRequests, logResponses);
+        this.customHeadersSupplier = getOrDefault(customHeadersSupplier, () -> Map::of);
 
-        this.objectMapper = new ObjectMapper()
-                .setPropertyNamingStrategy(PropertyNamingStrategies.SNAKE_CASE)
-                .enable(SerializationFeature.INDENT_OUTPUT)
-                .setSerializationInclusion(JsonInclude.Include.NON_NULL)
-                .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+        this.codec = ProviderJson.codec(ProviderJsonSpec.builder()
+                .propertyNaming(ProviderJsonSpec.PropertyNaming.SNAKE_CASE)
+                .inclusion(ProviderJsonSpec.Inclusion.NON_NULL)
+                .prettyPrint(true)
+                .build());
     }
 
     public <T> T get(String path, Class<T> responseType) throws IOException {
@@ -76,6 +95,7 @@ class ChromaHttpClient {
                 .method(HttpMethod.GET)
                 .url(url)
                 .addHeader("Content-Type", "application/json")
+                .addHeaders(customHeadersSupplier.get())
                 .build();
 
         return executeRequest(request, responseType);
@@ -88,12 +108,13 @@ class ChromaHttpClient {
     public <T> T post(String path, Object requestBody, Class<T> responseType, Map<String, String> pathParams)
             throws IOException {
         String url = buildUrl(path, pathParams);
-        String jsonBody = objectMapper.writeValueAsString(requestBody);
+        String jsonBody = codec.toJson(requestBody);
 
         HttpRequest request = HttpRequest.builder()
                 .method(HttpMethod.POST)
                 .url(url)
                 .addHeader("Content-Type", "application/json")
+                .addHeaders(customHeadersSupplier.get())
                 .body(jsonBody)
                 .build();
 
@@ -111,6 +132,7 @@ class ChromaHttpClient {
                 .method(HttpMethod.DELETE)
                 .url(url)
                 .addHeader("Content-Type", "application/json")
+                .addHeaders(customHeadersSupplier.get())
                 .build();
 
         executeRequest(request, Void.class);
@@ -122,11 +144,7 @@ class ChromaHttpClient {
             if (responseType == Void.class || response.body().isEmpty()) {
                 return null;
             }
-            try {
-                return objectMapper.readValue(response.body(), responseType);
-            } catch (JsonProcessingException e) {
-                throw new RuntimeException("Failed to parse response: " + response.body(), e);
-            }
+            return codec.fromJson(response.body(), responseType);
         } catch (HttpException e) {
             throw new RuntimeException("HTTP error: " + e.getMessage(), e);
         }

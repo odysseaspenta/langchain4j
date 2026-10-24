@@ -8,16 +8,15 @@ import java.lang.annotation.Target;
 
 /**
  * Marks a method as a definition of the request that will be sent to the supervisor.
+ * It can also declare parameters resolved through a {@link SupplierParameterResolver}.
  * <p>
  * Example:
  * <pre>
  * {@code
  *     public interface SupervisorStoryCreator {
  *
- *         @SupervisorAgent(outputKey = "story", subAgents = {
- *                 @SubAgent(type = CreativeWriter.class, outputKey = "story"),
- *                 @SubAgent(type = StyleReviewLoopAgent.class, outputKey = "story")
- *         })
+ *         @SupervisorAgent(outputKey = "story",
+ *                 subAgents = { CreativeWriter.class, StyleReviewLoopAgent.class })
  *         String write(@V("topic") String topic, @V("style") String style);
  *
  *         @SupervisorRequest

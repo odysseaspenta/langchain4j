@@ -12,16 +12,19 @@ sidebar_position: 0
 | [ArcadeDB](/integrations/embedding-stores/arcadedb)                                   | ✅                | ✅                     | ✅                   |
 | [Astra DB](/integrations/embedding-stores/astra-db)                                   | ✅                |                       |                     |
 | [Azure AI Search](/integrations/embedding-stores/azure-ai-search)                     | ✅                | ✅                     | ✅                   |
-| [Azure CosmosDB Mongo vCore](/integrations/embedding-stores/azure-cosmos-mongo-vcore) | ✅                |                       |                     |
+| [Azure CosmosDB Mongo vCore (deprecated)](/integrations/embedding-stores/azure-cosmos-mongo-vcore) | ✅                |                       |                     |
 | [Azure CosmosDB NoSQL](/integrations/embedding-stores/azure-cosmos-nosql)             | ✅                |                       |                     |
+| [Azure DocumentDB](/integrations/embedding-stores/azure-documentdb)                    | ✅                |                       |                     |
 | [Cassandra](/integrations/embedding-stores/cassandra)                                 | ✅                |                       |                     |
 | [Chroma](/integrations/embedding-stores/chroma)                                       | ✅                | ✅                     | ✅                   |
 | [ClickHouse](/integrations/embedding-stores/clickhouse)                               | ✅                | ✅                     | ✅                   |
 | [Cloud SQL for Postgres](/integrations/embedding-stores/cloud-sql)                    | ✅                | ✅                     | ✅                   |
+| [CockroachDB](/integrations/embedding-stores/cockroachdb)                             | ✅                | ✅                     | ✅                   |
 | [Coherence](/integrations/embedding-stores/coherence)                                 | ✅                | ✅                     | ✅                   |
 | [Couchbase](/integrations/embedding-stores/couchbase)                                 | ✅                |                       | ✅                   |
 | [DuckDB](/integrations/embedding-stores/duckdb)                                       | ✅                | ✅                     | ✅                   |
 | [Elasticsearch](/integrations/embedding-stores/elasticsearch)                         | ✅                | ✅                     | ✅                   |
+| [Hazelcast](/integrations/embedding-stores/hazelcast)                                 | ✅                |                       | ✅                   |
 | [Hibernate](/integrations/embedding-stores/hibernate)                                 | ✅                | ✅                     | ✅                   |
 | [Infinispan](/integrations/embedding-stores/infinispan)                               | ✅                | ✅                     | ✅                   |
 | [JVector](/integrations/embedding-stores/jvector)                                     |                  |                       | ✅                   |

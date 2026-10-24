@@ -1,0 +1,953 @@
+---
+sidebar_position: 8
+---
+
+# Google Gen AI (Experimental)
+
+https://github.com/googleapis/java-genai
+
+> [!WARNING]  
+> This integration is currently marked as **Experimental**. The API and implementation are subject to change in future releases.
+> It uses the new official Google Gen AI SDK for Java (`com.google.genai:google-genai`).
+
+## Table of Contents
+
+- [Maven Dependency](#maven-dependency)
+- [API Key](#api-key)
+- [Models Available](#models-available)
+- [GoogleGenAiChatModel](#googlegenAichatmodel)
+    - [Configuring](#configuring)
+- [GoogleGenAiStreamingChatModel](#googlegenaistreamingchatmodel)
+    - [Executor](#executor)
+- [GoogleGenAiEmbeddingModel](#googlegenaiembeddingmodel)
+- [GoogleGenAiImageModel](#googlegenaiimagemodel)
+- [GoogleGenAiTextToSpeechModel](#googlegenaitexttospeechmodel)
+- [Request & Response Logging](#request--response-logging)
+- [Batch API](#batch-api)
+- [Tools](#tools)
+- [Code Execution](#code-execution)
+- [JSON Schema / Structured Outputs](#json-schema--structured-outputs)
+- [Grounding Metadata](#grounding-metadata)
+- [Custom Labels](#custom-labels)
+- [File API](#file-api)
+- [Cached Content Support](#cached-content-support)
+- [Thinking Models (Gemini 3.0+)](#thinking-models-gemini-30)
+- [Token Usage](#token-usage)
+- [Multimodality (Audio, Video, PDF)](#multimodality-audio-video-pdf)
+- [Audio Transcription](#audio-transcription)
+- [Image Generation Output](#image-generation-output)
+- [Token Count Estimator](#token-count-estimator)
+- [Model Catalog](#model-catalog)
+
+## Maven Dependency
+
+```xml
+<dependency>
+    <groupId>dev.langchain4j</groupId>
+    <artifactId>langchain4j-google-genai</artifactId>
+    <version>1.22.0-beta32</version>
+</dependency>
+```
+
+## Authentication
+
+You can authenticate with the Gemini models using either an API key or Google Cloud Vertex AI credentials.
+
+### Gemini Developer API (API Key)
+
+Get an API key for free here: https://ai.google.dev/gemini-api/docs/api-key.
+You can provide it to the builder using `.apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))`.
+
+### Google Cloud Vertex AI
+
+If you are using Vertex AI, you can authenticate using Google Credentials along with your project ID and location. The integration will automatically use Application Default Credentials (ADC) if available, or you can explicitly provide them:
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    // .googleCredentials(...) // Optional: explicitly provide credentials
+    .projectId("your-google-cloud-project-id")
+    .location("us-central1")
+    .modelName("gemini-2.5-flash")
+    .build();
+```
+
+## Models available
+
+Check the list of [available models](https://ai.google.dev/gemini-api/docs/models/gemini) in the documentation.
+
+* `gemini-3.1-pro-preview`
+* `gemini-3.1-flash-lite`
+* `gemini-3-pro-preview`
+* `gemini-3-flash-preview`
+* `gemini-2.5-pro`
+* `gemini-2.5-flash`
+* `gemini-2.5-flash-lite`
+
+(See the [official documentation](https://ai.google.dev/gemini-api/docs/models) for the full list of specialized preview models like `-image`, `-tts`, and `-live`).
+
+## GoogleGenAiChatModel
+
+The usual `chat(...)` methods are available:
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+String response = gemini.chat("Hello Gemini!");
+```
+
+As well as the `ChatResponse chat(ChatRequest req)` method:
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+ChatResponse chatResponse = gemini.chat(ChatRequest.builder()
+    .messages(UserMessage.from(
+        "How many R's are there in the word 'strawberry'?"))
+    .build());
+
+String response = chatResponse.aiMessage().text();
+```
+
+### Configuring
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    // or .googleCredentials(...)
+    .projectId(...)
+    .location(...)
+    .modelName("gemini-2.5-flash")
+    .temperature(1.0)
+    .topP(0.95)
+    .topK(64)
+    .seed(42)
+    .maxOutputTokens(8192)
+    .timeout(Duration.ofSeconds(60))
+    .maxRetries(2)
+    .stopSequences(List.of(...))
+    .safetySettings(List.of(...))
+    .responseFormat(ResponseFormat.JSON)
+    .enableGoogleSearch(true)
+    .enableGoogleMaps(true)
+    .enableUrlContext(true)
+    .enableCodeExecution(true)
+    .includeCodeExecutionOutput(true)
+    .allowedFunctionNames(List.of("getWeather"))
+    .thinkingLevel("LOW")
+    .listeners(...)
+    .build();
+```
+
+### Advanced: customizing the `GenerateContentConfig`
+
+The builder methods cover the most common options. To set an option of the underlying Google Gen AI Java SDK
+that is not (yet) exposed by a builder method, register a `generateContentConfigCustomizer`. It receives the
+`GenerateContentConfig.Builder` after this integration has populated it (generation parameters, tools, system
+instruction, etc.) and just before the config is built, so it can set additional options or override existing
+ones while the per-request tools and system instruction are preserved.
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .generateContentConfigCustomizer(config -> config.responseLogprobs(true).logprobs(5))
+    .build();
+```
+
+This works the same way on `GoogleGenAiStreamingChatModel`.
+
+## Request & Response Logging
+
+You can enable request and response logging for debugging, troubleshooting, and audit purposes on `GoogleGenAiChatModel`, `GoogleGenAiStreamingChatModel`, `GoogleGenAiEmbeddingModel`, and `GoogleGenAiImageModel`.
+
+To capture these logs, configure `.logRequests(true)`, `.logResponses(true)` (or both using `.logRequestsAndResponses(true)`) in your model builders.
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .logRequests(true)
+    .logResponses(true)
+    // Or: .logRequestsAndResponses(true)
+    .build();
+```
+
+### Logging Configuration Setup
+
+All logging in the Google Gen AI integration module is routed through the standard **SLF4J** facade. To actually view the output, you must ensure that:
+1. An SLF4J binding (implementation) is present in your dependencies.
+2. The logging framework is configured to output logs under the `INFO` level for the package `dev.langchain4j.model.google.genai`.
+
+Below are common setup patterns for popular logging environments:
+
+#### 1. Setup using Logback
+
+Add the Logback classic implementation to your project:
+
+##### Maven
+```xml
+<dependency>
+    <groupId>ch.qos.logback</groupId>
+    <artifactId>logback-classic</artifactId>
+    <version>1.5.8</version> <!-- or your preferred version -->
+</dependency>
+```
+
+##### Gradle
+```groovy
+implementation 'ch.qos.logback:logback-classic:1.5.8'
+```
+
+Next, configure the logging level in your `src/main/resources/logback.xml` file. For example:
+
+```xml
+<configuration>
+    <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- Configure the package specifically for Google Gen AI logging -->
+    <logger name="dev.langchain4j.model.google.genai" level="INFO" />
+
+    <root level="WARN">
+        <appender-ref ref="STDOUT" />
+    </root>
+</configuration>
+```
+
+#### 2. Setup in Spring Boot Applications
+
+Spring Boot automatically provides an SLF4J provider. Simply configure the logging level in your `application.properties` (or `application.yml` equivalent):
+
+```properties
+# Enable logging for Google Gen AI models
+logging.level.dev.langchain4j.model.google.genai=INFO
+```
+
+#### 3. Setup with SLF4J Simple
+
+If you are writing a script or a simple command-line application, you can use the lightweight `slf4j-simple` backend:
+
+##### Maven
+```xml
+<dependency>
+    <groupId>org.slf4j</groupId>
+    <artifactId>slf4j-simple</artifactId>
+    <version>2.0.13</version>
+</dependency>
+```
+
+Configure SLF4J Simple via a system property when starting your application:
+
+```bash
+java -Dorg.slf4j.simpleLogger.log.dev.langchain4j.model.google.genai=INFO -jar app.jar
+```
+
+Alternatively, create a `simplelogger.properties` file in `src/main/resources/` containing:
+
+```properties
+org.slf4j.simpleLogger.log.dev.langchain4j.model.google.genai=info
+```
+
+## GoogleGenAiStreamingChatModel
+
+The `GoogleGenAiStreamingChatModel` allows streaming the text of a response token by token.
+The response must be handled by a `StreamingChatResponseHandler`.
+
+```java
+StreamingChatModel gemini = GoogleGenAiStreamingChatModel.builder()
+        .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+        .modelName("gemini-2.5-flash")
+        .build();
+
+CompletableFuture<ChatResponse> futureResponse = new CompletableFuture<>();
+
+gemini.chat("Tell me a joke about Java", new StreamingChatResponseHandler() {
+
+    @Override
+    public void onPartialResponse(String partialResponse) {
+        System.out.print(partialResponse);
+    }
+
+    @Override
+    public void onCompleteResponse(ChatResponse completeResponse) {
+        futureResponse.complete(completeResponse);
+    }
+
+    @Override
+    public void onError(Throwable error) {
+        futureResponse.completeExceptionally(error);
+    }
+});
+
+futureResponse.join();
+```
+
+### Executor
+
+The Google Gen AI SDK exposes streaming as a **blocking** `ResponseStream` iterator: each chunk is delivered by a blocking `next()` call. `GoogleGenAiStreamingChatModel` therefore needs an `ExecutorService` to drive that iteration off the caller's thread.
+
+If you don't pass one, a shared default from `DefaultExecutorProvider` is used (lazily initialized, uses virtual threads when available). This works out of the box but is **not recommended for production**: the default executor is unbounded, JVM-wide, and not tied to your application lifecycle — so it offers no back-pressure, no graceful shutdown, and no visibility in your metrics.
+
+You should almost always supply your own executor — for example, your framework's managed task executor (Spring `TaskExecutor`, Quarkus `ManagedExecutor`, ...), a virtual-thread executor you own, or a bounded pool tuned to your concurrency budget:
+
+```java
+ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor(); // or your framework's executor
+
+StreamingChatModel gemini = GoogleGenAiStreamingChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .executor(executor)
+    .build();
+```
+
+## Tools
+
+Tools (aka Function Calling) are supported. You can define them using LangChain4j's `AiServices`:
+
+```java
+class WeatherForecastService {
+    @Tool("Get the weather forecast for a location")
+    String getForecast(@P("Location to get the forecast for") String location) {
+        return "The weather in " + location + " is sunny and 25°C.";
+    }
+}
+
+interface WeatherAssistant {
+    String chat(String userMessage);
+}
+
+WeatherForecastService weatherForecastService = new WeatherForecastService();
+
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .temperature(0.0)
+    .build();
+
+WeatherAssistant weatherAssistant = AiServices.builder(WeatherAssistant.class)
+    .chatModel(gemini)
+    .tools(weatherForecastService)
+    .build();
+
+String response = weatherAssistant.chat("What is the weather forecast for Tokyo?");
+```
+
+## Code Execution
+
+With `enableCodeExecution(true)`, Gemini can write Python code, run it in a sandbox hosted by Google, and use the result in its answer.
+It suits calculations and data analysis, and nothing runs in your application.
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.8-flash")
+    .enableCodeExecution(true)
+    .includeCodeExecutionOutput(true)
+    .build();
+
+String answer = gemini.chat("What is 2 to the power of 100? Generate and run code to compute it.");
+```
+
+By default, only the answer of the model is returned. With `includeCodeExecutionOutput(true)`, the executed code and its output are added to the `AiMessage` text, in the order Gemini returns them:
+
+````text
+Code executed:
+```python
+print(2**100)
+```
+
+Output:
+```
+1267650600228229401496703205376
+```
+
+2 to the power of 100 is 1267650600228229401496703205376.
+````
+
+When the code fails or runs too long, the outcome (`OUTCOME_FAILED` or `OUTCOME_DEADLINE_EXCEEDED`) and the error output are added instead of the output.
+
+- Charts the code draws, for example with matplotlib, are returned as images: see `response.aiMessage().images()`.
+- The code is Python, runs for at most 30 seconds, and can only use the libraries of the sandbox, such as numpy, pandas and matplotlib.
+- The current Gemini models reject a request that combines code execution with your own tools. The same applies to Google Search.
+
+To read the code and its result as SDK objects, use the raw response:
+
+```java
+ChatResponse response = gemini.chat(ChatRequest.builder()
+    .messages(UserMessage.from("What is 2 to the power of 100? Generate and run code to compute it."))
+    .build());
+
+GoogleGenAiChatResponseMetadata metadata = (GoogleGenAiChatResponseMetadata) response.metadata();
+
+for (Part part : metadata.rawResponse().parts()) {
+    part.executableCode().ifPresent(code -> System.out.println(code.code().orElse("")));
+    part.codeExecutionResult().ifPresent(result ->
+        System.out.println(result.outcome().orElse(null) + ": " + result.output().orElse("")));
+}
+```
+
+`GoogleGenAiStreamingChatModel` accepts the same options, but its raw response only holds the last streamed chunk,
+so use `GoogleGenAiChatModel` to read the code and its result as SDK objects.
+
+## JSON Schema / Structured Outputs
+
+The `langchain4j-google-genai` integration maps LangChain4j JSON schemas (`ResponseFormat.jsonSchema()`) directly into the `ResponseSchema` of the official Google Gen AI SDK. This allows natively extracting strongly-typed Java records!
+
+```java
+record WeatherForecast(
+    @Description("minimum temperature") Integer minTemperature,
+    @Description("maximum temperature") Integer maxTemperature,
+    @Description("chances of rain") boolean rain
+) { }
+
+interface WeatherForecastAssistant {
+    WeatherForecast extract(String forecast);
+}
+
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+WeatherForecastAssistant forecastAssistant = AiServices.builder(WeatherForecastAssistant.class)
+    .chatModel(gemini)
+    .build();
+
+WeatherForecast forecast = forecastAssistant.extract("""
+    Morning: The day dawns bright and clear in Osaka...
+    Temperatures climb to a comfortable 22°C (72°F) and 
+    will drop to 15°C (59°F).
+    """);
+```
+
+> [!NOTE]  
+> The Google Gen AI API has some restrictions on advanced JSON schema features (such as `anyOf` / polymorphic typing). Simple POJOs, lists, and nested objects are fully supported.
+
+## Cached Content Support
+
+When working with very large context windows (like massive system prompts, large documents, or extensive codebases) that are reused across multiple requests, you can significantly reduce costs and latency by caching the content. 
+
+Once you have created the cached content using the official Google Gen AI SDK or API, you can easily pass the unique cache identifier to the LangChain4j chat model builders:
+
+```java
+// Pass your cached content URI here
+String cachedContentUri = "projects/123456/locations/us-central1/cachedContents/my-cached-content-789";
+
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-pro")
+    .cachedContent(cachedContentUri)
+    .build();
+
+// The model will automatically use the cached context!
+String response = gemini.chat("Summarize the cached document in 3 bullet points.");
+```
+
+This feature is available on `GoogleGenAiChatModel`, `GoogleGenAiStreamingChatModel`, and `GoogleGenAiBatchChatModel`.
+
+### Creating and managing caches
+
+Instead of creating the cache out-of-band, you can create and manage it directly from LangChain4j with `GoogleGenAiCaches`, which wraps the SDK's cache lifecycle (create / get / list / update TTL / delete). The messages are cached using the same `GoogleGenAiContentMapper` the chat models use, so you stay in the LangChain4j `ChatMessage` domain.
+
+```java
+GoogleGenAiCaches caches = GoogleGenAiCaches.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .build();
+
+// Cache a large, reusable context (a system instruction plus a long document)
+CachedContent cache = caches.createCache(
+    "gemini-2.5-flash",
+    List.of(
+        SystemMessage.from("You are a precise assistant answering questions about the attached document."),
+        UserMessage.from(longDocumentText)),
+    Duration.ofHours(1));
+
+// Reuse it across many requests via cachedContent
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .cachedContent(cache.name().orElseThrow())
+    .build();
+
+String answer = gemini.chat("Summarize the cached document in 3 bullet points.");
+
+// Manage the cache lifecycle
+caches.updateCacheTtl(cache.name().orElseThrow(), Duration.ofHours(2));
+caches.listCaches();
+caches.deleteCache(cache.name().orElseThrow());
+```
+
+> Note: explicit context caching requires a paid tier; it is not available on the free tier.
+
+## Thinking Models (Gemini 3.0+)
+
+Gemini 3.0 models (like `gemini-3.0-pro` and `gemini-3.0-flash`) support advanced reasoning (thinking) capabilities. 
+You can enable this by specifying a `thinkingLevel` during model configuration. The supported values are `"MINIMAL"`, `"LOW"`, `"MEDIUM"`, and `"HIGH"`:
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.0-pro")
+    .thinkingLevel("MEDIUM")
+    .build();
+```
+
+> [!NOTE]
+> Previously, thinking was configured using a token-based `thinkingBudget`. The `thinkingBudget` parameter is now considered legacy, though still supported. You cannot specify both `thinkingLevel` and `thinkingBudget` at the same time.
+
+> [!TIP]
+> The LangChain4j `google-genai` integration seamlessly manages the complex state required for multi-turn tool execution with thinking models. It automatically persists and injects the necessary hidden `thought_signature` tokens across conversation turns, ensuring robust and uninterrupted agentic workflows!
+
+### Thought summaries
+
+Set `includeThoughts(true)` to ask the model to return
+[thought summaries](https://ai.google.dev/gemini-api/docs/generate-content/thinking) along with the answer,
+and `returnThinking(true)` to have them mapped to `AiMessage.thinking()`:
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.1-pro-preview")
+    .thinkingLevel("MEDIUM")
+    .includeThoughts(true)
+    .returnThinking(true)
+    .build();
+
+ChatResponse response = gemini.chat(UserMessage.from("What is 6 times 7?"));
+
+String thinking = response.aiMessage().thinking();
+String answer = response.aiMessage().text();
+```
+
+When streaming, thought summaries are delivered through `StreamingChatResponseHandler.onPartialThinking()`
+while the answer continues to arrive through `onPartialResponse()`.
+
+To send thought summaries back to the model in follow-up requests, set `sendThinking(true)`. The
+`thought_signature` tokens required for multi-turn tool execution are handled independently and are always
+preserved, regardless of this setting.
+
+> [!NOTE]
+> `returnThinking` is disabled by default. Thought summaries returned by the model are then discarded and
+> never appear in `AiMessage.text()`.
+
+## Token Usage & Automatic Continuation
+
+Responses carry a `GoogleGenAiTokenUsage`, which adds the token counts Gemini reports for thinking, cached
+content, tool results, and multi-hop continuation to the standard input, output, and total counts:
+
+```java
+GoogleGenAiTokenUsage tokenUsage = (GoogleGenAiTokenUsage) response.metadata().tokenUsage();
+
+Integer thoughtsTokenCount = tokenUsage.thoughtsTokenCount();
+Integer cachedContentTokenCount = tokenUsage.cachedContentTokenCount();
+Integer toolUsePromptTokenCount = tokenUsage.toolUsePromptTokenCount();
+Integer initialPromptTokenCount = tokenUsage.initialPromptTokenCount();
+```
+
+Each is `null` when the model does not report it. `cachedContentTokenCount` is a subset of
+`inputTokenCount()`, whereas `toolUsePromptTokenCount` and `thoughtsTokenCount` are counted on top of it:
+Gemini defines the total as `inputTokenCount + outputTokenCount + toolUsePromptTokenCount + thoughtsTokenCount`.
+
+Gemini can end a long response early with the `CONTINUATION` finish reason. By default, the Google Gen AI SDK
+then sends the same request again, with a continuation token, until the model finishes, and returns all parts as one
+response. Each of these requests (hops) is billed separately. In that case, `inputTokenCount()` is the sum of the
+prompt tokens of all hops, while `initialPromptTokenCount()` is the prompt token count of the first hop only.
+For a response that needed a single request, both are the same.
+
+To turn automatic continuation off, set `automaticContinuation(false)` on the model builder, or per request
+via `GoogleGenAiChatRequestParameters`:
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .automaticContinuation(false)
+    .build();
+```
+
+## GoogleGenAiEmbeddingModel
+
+The `GoogleGenAiEmbeddingModel` allows you to generate embeddings for text segments using models like `gemini-embedding-2`.
+
+```java
+EmbeddingModel embeddingModel = GoogleGenAiEmbeddingModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-embedding-2")
+    .outputDimensionality(768)
+    .taskType(GoogleGenAiEmbeddingModel.TaskTypeEnum.RETRIEVAL_DOCUMENT)
+    .build();
+
+Response<Embedding> response = embeddingModel.embed("Hello world!");
+```
+
+### Batching & Retries
+
+When embedding multiple text segments (via `embedAll`), `GoogleGenAiEmbeddingModel` automatically manages batching and API request retries.
+
+```java
+EmbeddingModel embeddingModel = GoogleGenAiEmbeddingModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-embedding-2")
+    .maxSegmentsPerBatch(100) // Default: 100. Sets maximum segments per batch request.
+    .maxRetries(3)             // Default: 3. Automatically retries failed requests.
+    .build();
+```
+
+#### Title-based Grouping Strategy
+The official Google Gen AI Java SDK's `embedContent` API only supports a single common `title` per batch request. To handle this restriction cleanly and preserve document-level associations, `GoogleGenAiEmbeddingModel` implements a **group-by-title** batching strategy:
+
+1. When `taskType` is set to `RETRIEVAL_DOCUMENT`, the model groups text segments by their document title (extracted from the segment's metadata using the key defined by `.titleMetadataKey(...)`, which defaults to `"title"`).
+2. Segments sharing the same title are batched and sent together in a single API call.
+3. Segments with different titles (or no title) are processed in separate, optimized batches.
+4. The resulting embeddings are seamlessly reassembled and returned in their original order.
+
+This maximizes API throughput without losing document metadata context or individual segment titles.
+
+
+## GoogleGenAiImageModel
+
+The `GoogleGenAiImageModel` allows you to generate images from text prompts. It supports custom configuration like aspect ratios, image sizes, and person generation policies.
+
+```java
+ImageModel imageModel = GoogleGenAiImageModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.1-flash-image-preview")
+    .aspectRatio("16:9")
+    .build();
+
+Response<Image> response = imageModel.generate("A futuristic city at sunset");
+```
+
+## GoogleGenAiTextToSpeechModel
+
+The `GoogleGenAiTextToSpeechModel` turns text into speech with the Gemini text-to-speech models, such as `gemini-3.8-flash-tts` and `gemini-3.8-flash-lite-tts`.
+
+```java
+TextToSpeechModel model = GoogleGenAiTextToSpeechModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.8-flash-tts")
+    .voice("Kore")
+    .build();
+
+TextToSpeechResponse response = model.synthesize("Have a wonderful day!");
+
+Files.write(Path.of("speech.wav"), response.audio().binaryData());
+```
+
+- `voice`: the prebuilt voice to speak with, such as `Kore` or `Puck`. A voice set on the `TextToSpeechRequest` takes precedence. When no voice is set, the API chooses one.
+- `languageCode`: the BCP-47 code of the language to speak, such as `de-DE`. When it is not set, the language is detected from the text.
+
+The audio is returned as WAV. Preview models such as `gemini-3.1-flash-tts-preview` answer with raw 16-bit PCM, which is wrapped in a WAV header so that every model returns a file you can play.
+
+With `gemini-3.8-flash-tts`, the whole text is spoken, including directions such as "Say cheerfully:".
+
+### Multiple speakers
+
+To voice a conversation, give each speaker a voice with `speaker`, and start every turn on a new line with the name of its speaker and a colon:
+
+```java
+TextToSpeechModel model = GoogleGenAiTextToSpeechModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.8-flash-tts")
+    .speaker("Joe", "Kore")
+    .speaker("Jane", "Puck")
+    .build();
+
+TextToSpeechResponse response = model.synthesize("""
+    Joe: How is the weather in Paris today?
+    Jane: Sunny and warm.
+    """);
+```
+
+A line that does not start with a speaker name belongs to the turn above it, so the text must start with a speaker: text before the first turn is rejected with an `IllegalArgumentException`. A conversation has exactly two speakers, cannot be combined with `voice`, and needs a `gemini-3.8` text-to-speech model: the preview models reject it. `multiSpeakerVoiceConfig` takes the SDK's `MultiSpeakerVoiceConfig` when a speaker needs more than a prebuilt voice.
+
+To get the audio from a `ChatModel` instead, see [Speech / Audio Generation Output](#speech--audio-generation-output).
+
+## Batch API
+
+The Google Gen AI integration provides support for the Batch API, allowing you to run operations asynchronously in the background. The following batch models are supported:
+- `GoogleGenAiBatchChatModel`
+- `GoogleGenAiBatchEmbeddingModel`
+- `GoogleGenAiBatchImageModel`
+
+You can create batch jobs inline or from an uploaded file on Google Cloud. 
+
+```java
+GoogleGenAiBatchChatModel batchChatModel = GoogleGenAiBatchChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+BatchResponse<ChatResponse> batchResponse = batchChatModel.submit(
+    "My Batch Job",
+    List.of(
+        ChatRequest.builder().messages(UserMessage.from("What is 2+2?")).build(),
+        ChatRequest.builder().messages(UserMessage.from("What is the capital of France?")).build()
+    )
+);
+
+System.out.println("Batch Job ID: " + batchResponse.batchId());
+```
+
+You can then retrieve the status and results of the job using `batchChatModel.retrieve(batchResponse.batchId())`.
+
+## Grounding Metadata
+
+If you enable Google Search grounding or use a Vertex AI Search datastore, the Google Gen AI chat model exposes the native `GroundingMetadata` directly in the `ChatResponse`. You can retrieve it through the response metadata via the underlying raw `GenerateContentResponse`.
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .enableGoogleSearch(true)
+    .build();
+
+ChatResponse response = gemini.chat(ChatRequest.builder()
+    .messages(UserMessage.from("Who won the super bowl in 2024?"))
+    .build());
+
+GoogleGenAiChatResponseMetadata metadata = 
+    (GoogleGenAiChatResponseMetadata) response.metadata();
+
+if (metadata.rawResponse() != null 
+        && metadata.rawResponse().candidates() != null 
+        && !metadata.rawResponse().candidates().isEmpty()) {
+    var groundingMetadata = metadata.rawResponse().candidates().get(0).groundingMetadata();
+    if (groundingMetadata != null && groundingMetadata.webSearchQueries() != null) {
+        System.out.println("Search Queries: " + groundingMetadata.webSearchQueries());
+    }
+}
+```
+
+## Custom Labels
+
+You can apply custom key-value labels to your Google Gen AI requests, which can be useful for billing, metrics, and tracking purposes. Custom labels are supported by:
+- `GoogleGenAiChatModel`
+- `GoogleGenAiStreamingChatModel`
+- `GoogleGenAiBatchChatModel`
+- `GoogleGenAiImageModel`
+- `GoogleGenAiBatchImageModel`
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .labels(Map.of("environment", "production", "team", "backend"))
+    .build();
+```
+
+You can also override labels per request via `GoogleGenAiChatRequestParameters`:
+
+```java
+ChatResponse response = gemini.chat(ChatRequest.builder()
+    .messages(UserMessage.from("Hello"))
+    .parameters(GoogleGenAiChatRequestParameters.builder()
+        .labels(Map.of("environment", "staging", "tenant", "acme"))
+        .build())
+    .build());
+```
+
+## File API
+
+The Google Gen AI integration provides the `GoogleGenAiFiles` utility to upload and manage files on Google's servers. This is particularly useful for passing large multimodal inputs (like long videos, audio files, or extensive PDFs) that might exceed standard request limits.
+
+```java
+GoogleGenAiFiles fileApi = GoogleGenAiFiles.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .build();
+
+String uploadedFileUri = fileApi.uploadFile(
+    Paths.get("path/to/my-video.mp4"), 
+    "video/mp4", 
+    "My Video Demo"
+);
+
+// You can now use this URI in your chat requests
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+ChatResponse response = gemini.chat(ChatRequest.builder()
+    .messages(UserMessage.from(
+        VideoContent.from(uploadedFileUri, "video/mp4"),
+        TextContent.from("What happens in this video?")
+    ))
+    .build());
+```
+
+## Multimodality (Audio, Video, PDF)
+
+The integration fully supports LangChain4j's multimodal content types. The underlying `GoogleGenAiContentMapper` automatically converts them into the appropriate Gemini `Part` objects.
+
+```java
+ChatModel gemini = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+ChatResponse response = gemini.chat(ChatRequest.builder()
+    .messages(UserMessage.from(
+        AudioContent.from("https://example.com/audio.mp3"),
+        PdfFileContent.from("https://example.com/document.pdf"),
+        TextContent.from("Summarize the document and the audio recording.")
+    ))
+    .build());
+```
+
+## Audio Transcription
+
+Models built for speech recognition, such as `gemini-3.5-transcribe`, turn audio into text.
+Send the audio as an `AudioContent`; no text instruction is needed. The transcript is returned as the text of the `AiMessage`.
+
+Use `audioTranscriptionConfig` to control how the audio is transcribed:
+
+```java
+ChatModel transcriber = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.5-transcribe")
+    .audioTranscriptionConfig(AudioTranscriptionConfig.builder()
+        .mode(AudioTranscriptionConfigMode.Known.VERBATIM)
+        .languageCodes("en-US")
+        .customVocabulary("LangChain4j", "Gemini")
+        .wordTimestamp(true)
+        .diarization(true)
+        .build())
+    .build();
+
+ChatResponse response = transcriber.chat(ChatRequest.builder()
+    .messages(UserMessage.from(AudioContent.from("https://example.com/meeting.mp3")))
+    .build());
+
+String transcript = response.aiMessage().text();
+```
+
+- `mode`: `VERBATIM` (the default) keeps every word, including filler words, repetitions and false starts.
+  `SMART` removes them and lightly formats the text. Word timestamps and diarization cannot be used with `SMART`.
+- `languageCodes`: BCP-47 codes of the languages spoken in the audio. When omitted, the language is detected automatically.
+- `customVocabulary`: words and phrases the model should recognize, such as product or people names.
+- `wordTimestamp`: returns the start and end offset of every word.
+- `diarization`: labels which speaker said what.
+
+Segment-level timestamps (`startOffset` and `endOffset` as `Duration`), word timestamps, and speaker labels are not part of the `AiMessage` text. Read them from the raw response:
+
+```java
+GoogleGenAiChatResponseMetadata metadata = (GoogleGenAiChatResponseMetadata) response.metadata();
+
+for (Part part : metadata.rawResponse().parts()) {
+    part.audioTranscription().ifPresent(transcription -> {
+        String speaker = transcription.speakerLabel().orElse("");
+        Duration segmentStart = transcription.startOffset().orElse(Duration.ZERO);
+        Duration segmentEnd = transcription.endOffset().orElse(Duration.ZERO);
+        System.out.printf("Segment [%s] (%s - %s): %s%n",
+            speaker, segmentStart, segmentEnd, transcription.text().orElse(""));
+        for (WordInfo word : transcription.words().orElse(List.of())) {
+            System.out.printf("  [%s] %s - %s %s%n",
+                speaker, word.startOffset().orElse(""), word.endOffset().orElse(""), word.word().orElse(""));
+        }
+    });
+}
+```
+
+`GoogleGenAiStreamingChatModel` accepts the same `audioTranscriptionConfig`, but its raw response only holds the last streamed chunk,
+so use `GoogleGenAiChatModel` when you need timestamps or speaker labels.
+
+## Speech / Audio Generation Output
+
+Gemini TTS models (such as `gemini-3.8-flash-tts`, `gemini-3.8-flash-lite-tts`, or `gemini-3.1-flash-tts-preview`) can synthesize speech audio from text. Configure `speechConfig` (including single-speaker or multi-speaker voices, language code, and custom pronunciation dictionaries via `PronunciationDictionaryConfig`) along with `responseModalities(List.of("AUDIO"))`:
+
+```java
+ChatModel ttsModel = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-3.8-flash-tts")
+    .responseModalities(List.of("AUDIO"))
+    .speechConfig(SpeechConfig.builder()
+        .languageCode("en-US")
+        .voiceConfig(VoiceConfig.builder()
+            .prebuiltVoiceConfig(PrebuiltVoiceConfig.builder().voiceName("Kore").build())
+            .build())
+        .build())
+    .build();
+
+ChatResponse response = ttsModel.chat(UserMessage.from("Welcome to LangChain4j!"));
+
+List<Audio> audioParts = response.aiMessage().audios();
+```
+
+Each `Audio` holds one audio part exactly as the model returned it, with its `mimeType()` and `base64Data()`.
+The `gemini-3.8` TTS models return WAV (`audio/wav`). The preview TTS models return raw PCM audio
+(for example `audio/L16;codec=pcm;rate=24000`) rather than a playable file, so add a WAV header before saving or playing it,
+or use [`GoogleGenAiTextToSpeechModel`](#googlegenaitexttospeechmodel), which adds it.
+
+`GoogleGenAiStreamingChatModel` receives the audio in several chunks. The final `AiMessage` keeps every part,
+in the order they arrived, so join the bytes of all parts to get the complete audio.
+
+## Image Generation Output
+
+Some Gemini models, such as `gemini-2.5-flash-image`, return generated pictures alongside the text of a chat
+response. They arrive as `inlineData` parts, and `GoogleGenAiChatModel` maps them into the `AiMessage` attributes
+under `GENERATED_IMAGES_KEY`, which is what `AiMessage.images()` reads:
+
+```java
+ChatModel model = GoogleGenAiChatModel.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash-image")
+    .build();
+
+ChatResponse response = model.chat(UserMessage.from("A watercolor sketch of a lighthouse at dusk"));
+
+for (Image image : response.aiMessage().images()) {
+    System.out.println("Generated image: " + image.mimeType());
+
+    // Save it, display it, or hand it to another model
+    Files.write(Paths.get("generated_image.png"), Base64.getDecoder().decode(image.base64Data()));
+}
+```
+
+Only `image/*` blobs become generated images; `audio/*` blobs are returned by `AiMessage.audios()` (see above),
+and inline data of any other type is ignored.
+
+Streaming responses work the same way. `GoogleGenAiStreamingChatModel` receives the answer one chunk at a time, and
+every chunk contributes its images to the final message, so a picture that arrives on its own chunk is not lost.
+
+`langchain4j-google-ai-gemini` stores generated images under the same key, so the same reading code works with
+either module.
+
+## Token Count Estimator
+
+You can accurately estimate the number of tokens in your prompts and messages using the `GoogleGenAiTokenCountEstimator`, which uses the official SDK's counting endpoints.
+
+```java
+TokenCountEstimator estimator = GoogleGenAiTokenCountEstimator.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .modelName("gemini-2.5-flash")
+    .build();
+
+int tokenCount = estimator.estimateTokenCount("How many tokens is this sentence?");
+System.out.println("Tokens: " + tokenCount);
+```
+
+## Model Catalog
+
+You can query the list of available Gemini models programmatically using the `GoogleGenAiModelCatalog`. This is helpful for discovering model capabilities, context windows, and supported methods dynamically.
+
+```java
+GoogleGenAiModelCatalog catalog = GoogleGenAiModelCatalog.builder()
+    .apiKey(System.getenv("GOOGLE_AI_GEMINI_API_KEY"))
+    .build();
+
+List<Model> availableModels = catalog.listModels();
+availableModels.forEach(model -> {
+    System.out.println("Model Name: " + model.name());
+    System.out.println("Supported Generation Methods: " + model.supportedGenerationMethods());
+});
+```

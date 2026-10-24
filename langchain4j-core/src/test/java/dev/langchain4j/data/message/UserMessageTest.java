@@ -13,7 +13,8 @@ class UserMessageTest implements WithAssertions {
     @Test
     void toBuilder() {
         UserMessage message1 = UserMessage.from(TextContent.from("one"));
-        UserMessage message2 = message1.toBuilder().addContent(TextContent.from("two")).build();
+        UserMessage message2 =
+                message1.toBuilder().addContent(TextContent.from("two")).build();
         assertThat(message1.contents()).containsExactly(TextContent.from("one"));
         assertThat(message2.contents()).containsExactly(TextContent.from("one"), TextContent.from("two"));
     }
@@ -25,7 +26,23 @@ class UserMessageTest implements WithAssertions {
         assertThat(m.singleText()).isEqualTo("text");
         assertThat(m.contents()).containsExactly(TextContent.from("text"));
         assertThat(m.name()).isEqualTo("name");
-        assertThat(m).hasToString("UserMessage { name = \"name\", contents = [TextContent { text = \"text\" }], attributes = {} }");
+        assertThat(m)
+                .hasToString(
+                        "UserMessage { name = \"name\", contents = [TextContent { text = \"text\" }], attributes = {} }");
+    }
+
+    @Test
+    void contents_are_not_affected_by_mutations_of_the_source_list() {
+        List<Content> contents = new ArrayList<>();
+        contents.add(TextContent.from("one"));
+
+        UserMessage message = UserMessage.from(contents);
+        int hashCodeBeforeMutation = message.hashCode();
+
+        contents.add(TextContent.from("two"));
+
+        assertThat(message.contents()).containsExactly(TextContent.from("one"));
+        assertThat(message.hashCode()).isEqualTo(hashCodeBeforeMutation);
     }
 
     @Test
@@ -75,8 +92,8 @@ class UserMessageTest implements WithAssertions {
         assertThat(new UserMessage("text").singleText()).isEqualTo("text");
 
         assertThatExceptionOfType(RuntimeException.class)
-                .isThrownBy(
-                        () -> new UserMessage("name", listOf(new TextContent("abc"), new TextContent("def"))).singleText())
+                .isThrownBy(() ->
+                        new UserMessage("name", listOf(new TextContent("abc"), new TextContent("def"))).singleText())
                 .withMessageContaining("Expecting single text content, but got:");
     }
 
@@ -146,5 +163,66 @@ class UserMessageTest implements WithAssertions {
         Optional<UserMessage> result = UserMessage.findLast(messages);
 
         assertThat(result).contains(only);
+    }
+
+    @Test
+    void replaceLast_should_replace_last_user_message_when_different() {
+        UserMessage original = UserMessage.from("original");
+        UserMessage replacement = UserMessage.from("replacement");
+        List<ChatMessage> messages = List.of(SystemMessage.from("system"), original, AiMessage.from("ai"));
+
+        List<ChatMessage> result = UserMessage.replaceLast(messages, replacement);
+
+        assertThat(result).containsExactly(SystemMessage.from("system"), replacement, AiMessage.from("ai"));
+        assertThat(result).isNotSameAs(messages);
+    }
+
+    @Test
+    void replaceLast_should_return_same_list_when_replacement_matches() {
+        UserMessage message = UserMessage.from("hello");
+        List<ChatMessage> messages = List.of(SystemMessage.from("system"), message, AiMessage.from("ai"));
+
+        List<ChatMessage> result = UserMessage.replaceLast(messages, UserMessage.from("hello"));
+
+        assertThat(result).isSameAs(messages);
+    }
+
+    @Test
+    void replaceLast_should_return_same_list_when_replacement_is_null() {
+        List<ChatMessage> messages = List.of(UserMessage.from("hello"));
+
+        List<ChatMessage> result = UserMessage.replaceLast(messages, null);
+
+        assertThat(result).isSameAs(messages);
+    }
+
+    @Test
+    void replaceLast_should_return_same_list_when_no_user_message_found() {
+        List<ChatMessage> messages = List.of(SystemMessage.from("system"), AiMessage.from("ai"));
+
+        List<ChatMessage> result = UserMessage.replaceLast(messages, UserMessage.from("replacement"));
+
+        assertThat(result).isSameAs(messages);
+    }
+
+    @Test
+    void replaceLast_should_replace_only_last_user_message() {
+        UserMessage first = UserMessage.from("first");
+        UserMessage second = UserMessage.from("second");
+        UserMessage replacement = UserMessage.from("replacement");
+        List<ChatMessage> messages = List.of(first, AiMessage.from("ai"), second);
+
+        List<ChatMessage> result = UserMessage.replaceLast(messages, replacement);
+
+        assertThat(result).containsExactly(first, AiMessage.from("ai"), replacement);
+    }
+
+    @Test
+    void replaceLast_should_return_same_list_for_empty_list() {
+        List<ChatMessage> messages = List.of();
+
+        List<ChatMessage> result = UserMessage.replaceLast(messages, UserMessage.from("replacement"));
+
+        assertThat(result).isSameAs(messages);
     }
 }

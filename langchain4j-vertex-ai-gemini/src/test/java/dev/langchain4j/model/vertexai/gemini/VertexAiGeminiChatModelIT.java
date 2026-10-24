@@ -215,7 +215,7 @@ class VertexAiGeminiChatModelIT {
         VertexAiGeminiChatModel modelWithSearch = VertexAiGeminiChatModel.builder()
                 .project(System.getenv("GCP_PROJECT_ID"))
                 .location(System.getenv("GCP_LOCATION"))
-                .modelName("gemini-2.0-flash-lite")
+                .modelName("gemini-2.5-flash-lite")
                 .useGoogleSearch(true)
                 .build();
 
@@ -461,7 +461,7 @@ class VertexAiGeminiChatModelIT {
         assertThat(file).exists();
 
         UserMessage msg = UserMessage.from(
-                AudioContent.from(Paths.get("src/test/resources/fingers.mp4").toUri()),
+                VideoContent.from(Paths.get("src/test/resources/fingers.mp4").toUri()),
                 TextContent.from("What's in this video?"));
 
         // when

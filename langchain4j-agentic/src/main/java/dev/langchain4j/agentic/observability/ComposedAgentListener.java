@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.function.Predicate;
 
+
 @Internal
 public class ComposedAgentListener implements AgentListener {
 
@@ -71,6 +72,13 @@ public class ComposedAgentListener implements AgentListener {
     }
 
     @Override
+    public void onAgentSkipped(final AgentSkipped agentSkipped) {
+        for (AgentListener listener : listeners) {
+            listener.onAgentSkipped(agentSkipped);
+        }
+    }
+
+    @Override
     public void afterAgentToolExecution(AfterAgentToolExecution afterAgentToolExecution) {
         for (AgentListener listener : listeners) {
             listener.afterAgentToolExecution(afterAgentToolExecution);
@@ -98,6 +106,13 @@ public class ComposedAgentListener implements AgentListener {
         }
     }
 
+    @Override
+    public void onAgenticSystemSuspended(final AgenticScope agenticScope) {
+        for (AgentListener listener : listeners) {
+            listener.onAgenticSystemSuspended(agenticScope);
+        }
+    }
+
     public boolean contains(AgentListener listener) {
         if (listener instanceof ComposedAgentListener composed) {
             return listeners.containsAll(composed.listeners);
@@ -108,6 +123,23 @@ public class ComposedAgentListener implements AgentListener {
     @Override
     public boolean inheritedBySubagents() {
         return listeners.stream().anyMatch(AgentListener::inheritedBySubagents);
+    }
+
+    /**
+     * Composes a newly registered listener with the existing one, if any. When the existing listener is already a
+     * {@link ComposedAgentListener}, the new listener is added to it.
+     *
+     * @return the listener to be used in place of the existing one
+     */
+    public static AgentListener compose(AgentListener existingListener, AgentListener newListener) {
+        if (existingListener == null) {
+            return newListener;
+        }
+        if (existingListener instanceof ComposedAgentListener composed) {
+            composed.addListener(newListener);
+            return composed;
+        }
+        return new ComposedAgentListener(existingListener, newListener);
     }
 
     public static AgentListener composeWithInherited(AgentListener localListener, AgentListener parentListener) {

@@ -35,6 +35,12 @@ class ChatMessageSerializerTest {
         return Stream.of(
                 Arguments.of(SystemMessage.from("hello"), "{\"text\":\"hello\",\"type\":\"SYSTEM\"}"),
                 Arguments.of(
+                        SystemMessage.builder()
+                                .text("hello")
+                                .attributes(Map.of("prompt_cache_breakpoint", "explicit"))
+                                .build(),
+                        "{\"text\":\"hello\",\"attributes\":{\"prompt_cache_breakpoint\":\"explicit\"},\"type\":\"SYSTEM\"}"),
+                Arguments.of(
                         UserMessage.from("hello"),
                         "{\"contents\":[{\"text\":\"hello\",\"type\":\"TEXT\"}],\"type\":\"USER\"}"),
                 Arguments.of(
@@ -95,7 +101,7 @@ class ChatMessageSerializerTest {
                         "{\"text\":\"test-text\",\"thinking\":\"test-thinking\",\"toolExecutionRequests\":[{\"name\":\"weather\",\"arguments\":\"{\\\"city\\\": \\\"Munich\\\"}\"}],\"attributes\":{\"name\":\"Klaus\",\"age\":42,\"extra\":[\"one\",\"two\"]},\"type\":\"AI\"}"),
                 Arguments.of(
                         ToolExecutionResultMessage.from("12345", "weather", "sunny"),
-                        "{\"id\":\"12345\",\"toolName\":\"weather\",\"text\":\"sunny\",\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
+                        "{\"id\":\"12345\",\"toolName\":\"weather\",\"contents\":[{\"text\":\"sunny\",\"type\":\"TEXT\"}],\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
                 Arguments.of(
                         ToolExecutionResultMessage.builder()
                                 .id("12345")
@@ -103,13 +109,13 @@ class ChatMessageSerializerTest {
                                 .text("error occurred")
                                 .isError(true)
                                 .build(),
-                        "{\"id\":\"12345\",\"toolName\":\"weather\",\"text\":\"error occurred\",\"isError\":true,\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
+                        "{\"id\":\"12345\",\"toolName\":\"weather\",\"contents\":[{\"text\":\"error occurred\",\"type\":\"TEXT\"}],\"isError\":true,\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
                 Arguments.of(
                         ToolExecutionResultMessage.from(null, null, "sunny"),
-                        "{\"text\":\"sunny\",\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
+                        "{\"contents\":[{\"text\":\"sunny\",\"type\":\"TEXT\"}],\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
                 Arguments.of(
                         ToolExecutionResultMessage.from("", "", "sunny"),
-                        "{\"id\":\"\",\"toolName\":\"\",\"text\":\"sunny\",\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
+                        "{\"id\":\"\",\"toolName\":\"\",\"contents\":[{\"text\":\"sunny\",\"type\":\"TEXT\"}],\"attributes\":{},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
                 Arguments.of(
                         ToolExecutionResultMessage.builder()
                                 .id("67890")
@@ -121,7 +127,7 @@ class ChatMessageSerializerTest {
                                     }
                                 })
                                 .build(),
-                        "{\"id\":\"67890\",\"toolName\":\"tool_search_tool\",\"text\":\"Tools found: weather, time\",\"attributes\":{\"found_tools\":[\"weather\", \"time\"]},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
+                        "{\"id\":\"67890\",\"toolName\":\"tool_search_tool\",\"contents\":[{\"text\":\"Tools found: weather, time\",\"type\":\"TEXT\"}],\"attributes\":{\"found_tools\":[\"weather\", \"time\"]},\"type\":\"TOOL_EXECUTION_RESULT\"}"),
                 Arguments.of(
                         CustomMessage.from(new LinkedHashMap<>() {
                             {
@@ -161,6 +167,18 @@ class ChatMessageSerializerTest {
     }
 
     @Test
+    void should_deserialize_SystemMessage_without_attributes() {
+
+        SystemMessage deserialized = (SystemMessage) messageFromJson("{\"text\":\"hello\",\"type\":\"SYSTEM\"}");
+
+        assertThat(deserialized.text()).isEqualTo("hello");
+        assertThat(deserialized.attributes()).isEmpty();
+
+        deserialized.attributes().put("k", "v");
+        assertThat(deserialized.attributes()).containsExactly(Map.entry("k", "v"));
+    }
+
+    @Test
     void should_deserialize_UserMessage_without_attributes() {
 
         UserMessage deserialized = (UserMessage)
@@ -194,6 +212,7 @@ class ChatMessageSerializerTest {
         assertThat(deserialized.id()).isEqualTo("12345");
         assertThat(deserialized.toolName()).isEqualTo("weather");
         assertThat(deserialized.text()).isEqualTo("sunny");
+        assertThat(deserialized.contents()).isEqualTo(List.of(TextContent.from("sunny")));
         assertThat(deserialized.isError()).isNull();
     }
 
@@ -206,6 +225,7 @@ class ChatMessageSerializerTest {
         assertThat(deserialized.id()).isEqualTo("12345");
         assertThat(deserialized.toolName()).isEqualTo("weather");
         assertThat(deserialized.text()).isEqualTo("sunny");
+        assertThat(deserialized.contents()).isEqualTo(List.of(TextContent.from("sunny")));
         assertThat(deserialized.attributes()).isEmpty();
     }
 }

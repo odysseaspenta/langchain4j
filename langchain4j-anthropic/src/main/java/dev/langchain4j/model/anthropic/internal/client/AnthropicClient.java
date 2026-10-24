@@ -1,16 +1,29 @@
 package dev.langchain4j.model.anthropic.internal.client;
 
 import dev.langchain4j.Internal;
+import dev.langchain4j.exception.AsyncNotSupportedException;
+import dev.langchain4j.exception.UnsupportedFeatureException;
+import dev.langchain4j.internal.AsyncNotSupported;
 import dev.langchain4j.http.client.HttpClientBuilder;
 import dev.langchain4j.http.client.HttpClientBuilderLoader;
+import dev.langchain4j.model.anthropic.internal.api.AnthropicBatch;
+import dev.langchain4j.model.anthropic.internal.api.AnthropicBatchResult;
 import dev.langchain4j.model.anthropic.internal.api.AnthropicCountTokensRequest;
+import dev.langchain4j.model.anthropic.internal.api.AnthropicCreateBatchRequest;
 import dev.langchain4j.model.anthropic.internal.api.AnthropicCreateMessageRequest;
 import dev.langchain4j.model.anthropic.internal.api.AnthropicCreateMessageResponse;
+import dev.langchain4j.model.anthropic.internal.api.AnthropicListBatchesResponse;
 import dev.langchain4j.model.anthropic.internal.api.AnthropicModelsListResponse;
 import dev.langchain4j.model.anthropic.internal.api.MessageTokenCountResponse;
 import dev.langchain4j.model.chat.response.StreamingChatResponseHandler;
+import dev.langchain4j.model.chat.response.ChatModelStreamingEvent;
 import dev.langchain4j.spi.ServiceHelper;
 import java.time.Duration;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.Flow.Publisher;
+import java.util.function.Supplier;
 import org.slf4j.Logger;
 
 @Internal
@@ -21,6 +34,18 @@ public abstract class AnthropicClient {
     public ParsedAndRawResponse createMessageWithRawResponse(AnthropicCreateMessageRequest request) {
         AnthropicCreateMessageResponse parsedResponse = createMessage(request);
         return new ParsedAndRawResponse(parsedResponse, null);
+    }
+
+    /**
+     * Non-blocking counterpart of {@link #createMessageWithRawResponse(AnthropicCreateMessageRequest)}: sends the
+     * request without holding a thread while the response is in flight. The default returns a failed future carrying
+     * {@link AsyncNotSupportedException} to signal that this client has no native asynchronous path.
+     *
+     * @since 1.20.0
+     */
+    public CompletableFuture<ParsedAndRawResponse> createMessageWithRawResponseAsync(
+            AnthropicCreateMessageRequest request) {
+        return AsyncNotSupported.failedFuture(getClass(), "createMessageWithRawResponseAsync");
     }
 
     /**
@@ -35,12 +60,46 @@ public abstract class AnthropicClient {
 
     public abstract void createMessage(AnthropicCreateMessageRequest request, StreamingChatResponseHandler handler);
 
+    /**
+     * Non-blocking reactive streaming counterpart of {@link #createMessage(AnthropicCreateMessageRequest,
+     * AnthropicCreateMessageOptions, StreamingChatResponseHandler)}: returns a {@code Publisher} of
+     * {@link ChatModelStreamingEvent}s driven by {@code httpClient.stream(...)} (nothing parked on socket reads);
+     * {@code bufferSize} bounds the back-pressure buffer, and cancelling the subscription aborts the in-flight HTTP
+     * request. The default returns a failing {@code Publisher} carrying {@link AsyncNotSupportedException}.
+     *
+     * @since 1.20.0
+     */
+    public Publisher<ChatModelStreamingEvent> createMessagePublisher(
+            AnthropicCreateMessageRequest request, AnthropicCreateMessageOptions options, int bufferSize) {
+        return AsyncNotSupported.failingPublisher(getClass(), "createMessagePublisher");
+    }
+
     public MessageTokenCountResponse countTokens(AnthropicCountTokensRequest request) {
         throw new UnsupportedOperationException("Token counting is not implemented");
     }
 
     public AnthropicModelsListResponse listModels() {
         throw new UnsupportedOperationException("Model listing is not supported by this client implementation");
+    }
+
+    public AnthropicBatch createBatch(AnthropicCreateBatchRequest request) {
+        throw new UnsupportedFeatureException("Batch creation is not supported by this client implementation");
+    }
+
+    public AnthropicBatch retrieveBatch(String batchId) {
+        throw new UnsupportedFeatureException("Batch retrieval is not supported by this client implementation");
+    }
+
+    public List<AnthropicBatchResult> retrieveBatchResults(String batchId) {
+        throw new UnsupportedFeatureException("Batch results retrieval is not supported by this client implementation");
+    }
+
+    public AnthropicBatch cancelBatch(String batchId) {
+        throw new UnsupportedFeatureException("Batch cancellation is not supported by this client implementation");
+    }
+
+    public AnthropicListBatchesResponse listBatches(Integer limit, String afterId) {
+        throw new UnsupportedFeatureException("Batch listing is not supported by this client implementation");
     }
 
     @SuppressWarnings("rawtypes")
@@ -104,6 +163,7 @@ public abstract class AnthropicClient {
         public Logger logger;
         public Boolean logRequests;
         public Boolean logResponses;
+        public Supplier<Map<String, String>> customHeadersSupplier;
 
         /**
          * Builds and returns a new {@link AnthropicClient} instance.
@@ -272,6 +332,31 @@ public abstract class AnthropicClient {
          */
         public B logger(Logger logger) {
             this.logger = logger;
+            return self();
+        }
+
+        /**
+         * Sets custom HTTP headers to be sent with every request.
+         *
+         * @param customHeaders a map of header names to values
+         * @return this builder for method chaining
+         */
+        public B customHeaders(Map<String, String> customHeaders) {
+            this.customHeadersSupplier = () -> customHeaders;
+            return self();
+        }
+
+        /**
+         * Sets a supplier that provides custom HTTP headers to be sent with every request.
+         *
+         * <p>The supplier is called for each request, allowing headers to be computed dynamically
+         * (e.g., short-lived auth tokens).</p>
+         *
+         * @param customHeadersSupplier a supplier that provides a map of header names to values
+         * @return this builder for method chaining
+         */
+        public B customHeaders(Supplier<Map<String, String>> customHeadersSupplier) {
+            this.customHeadersSupplier = customHeadersSupplier;
             return self();
         }
 

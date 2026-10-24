@@ -85,7 +85,7 @@ public final class OutputGuardrailResult implements GuardrailResult<OutputGuardr
     }
 
     /**
-     * Produces a non-fatal failure
+     * Produces a successful result with specific success text and result object
      *
      * @param successfulText
      *            The text of the successful result.
@@ -110,7 +110,7 @@ public final class OutputGuardrailResult implements GuardrailResult<OutputGuardr
     }
 
     /**
-     * Produces a non-fatal failure
+     * Produces a successful result with specific AiMessage and result object
      *
      * @param successfulAiMessage
      *            The AiMessage successful result.
@@ -120,6 +120,20 @@ public final class OutputGuardrailResult implements GuardrailResult<OutputGuardr
      */
     public static OutputGuardrailResult successWith(AiMessage successfulAiMessage, Object successfulResult) {
         return new OutputGuardrailResult(successfulAiMessage, successfulResult);
+    }
+
+    /**
+     * Produces a successful result carrying a result object without marking the output as rewritten.
+     * <p>
+     * Unlike {@link #successWith(String, Object)} and {@link #successWith(AiMessage, Object)}, the result is a
+     * plain {@link Result#SUCCESS}, so subsequent guardrails in the chain remain allowed to retry or reprompt.
+     *
+     * @param successfulResult
+     *            the object to carry on the successful result.
+     * @return The result of a successful output guardrail validation carrying the given object.
+     */
+    public static OutputGuardrailResult successWithResult(Object successfulResult) {
+        return new OutputGuardrailResult(Result.SUCCESS, (AiMessage) null, successfulResult, Collections.emptyList());
     }
 
     /**
@@ -235,49 +249,113 @@ public final class OutputGuardrailResult implements GuardrailResult<OutputGuardr
         return successfulResult;
     }
 
+    OutputGuardrailResult withSuccessfulResult(Object successfulResult) {
+        return Objects.equals(this.successfulResult, successfulResult)
+                ? this
+                : new OutputGuardrailResult(result, successfulAiMessage, successfulResult, failures);
+    }
+
     /**
      * Represents an output guardrail failure
      */
+    /**
+     * Returns {@code true} if any failure in this result requested removal of the violating
+     * {@link AiMessage} from chat memory.
+     */
+    public boolean shouldRemoveViolatingMessage() {
+        return !isSuccess() && failures.stream().anyMatch(Failure::removeViolatingMessage);
+    }
+
+    /**
+     * Produces a non-fatal failure that also requests removal of the violating {@link AiMessage}
+     * from chat memory after the guardrail chain finishes.
+     *
+     * @param message A message describing the failure.
+     * @return The result of a failed output guardrail validation with memory cleanup requested.
+     */
+    public static OutputGuardrailResult failureWithMessageRemoval(String message) {
+        return new OutputGuardrailResult(new Failure(message, null, null, false, null, true), false);
+    }
+
+    /**
+     * Produces a non-fatal failure that also requests removal of the violating {@link AiMessage}
+     * from chat memory after the guardrail chain finishes.
+     *
+     * @param message A message describing the failure.
+     * @param cause   The exception that caused this failure.
+     * @return The result of a failed output guardrail validation with memory cleanup requested.
+     */
+    public static OutputGuardrailResult failureWithMessageRemoval(String message, Throwable cause) {
+        return new OutputGuardrailResult(new Failure(message, cause, null, false, null, true), false);
+    }
+
+    /**
+     * Produces a fatal failure that also requests removal of the violating {@link AiMessage}
+     * from chat memory after the guardrail chain finishes.
+     *
+     * @param message A message describing the failure.
+     * @return The result of a fatally failed output guardrail validation with memory cleanup requested.
+     */
+    public static OutputGuardrailResult fatalWithMessageRemoval(String message) {
+        return new OutputGuardrailResult(new Failure(message, null, null, false, null, true), true);
+    }
+
+    /**
+     * Produces a fatal failure that also requests removal of the violating {@link AiMessage}
+     * from chat memory after the guardrail chain finishes.
+     *
+     * @param message A message describing the failure.
+     * @param cause   The exception that caused this failure.
+     * @return The result of a fatally failed output guardrail validation with memory cleanup requested.
+     */
+    public static OutputGuardrailResult fatalWithMessageRemoval(String message, Throwable cause) {
+        return new OutputGuardrailResult(new Failure(message, cause, null, false, null, true), true);
+    }
+
     public static final class Failure implements GuardrailResult.Failure {
         private final String message;
         private final Throwable cause;
         private final Class<? extends Guardrail> guardrailClass;
         private final boolean retry;
         private final String reprompt;
+        private final boolean removeViolatingMessage;
 
         Failure(
                 String message,
                 Throwable cause,
                 Class<? extends Guardrail> guardrailClass,
                 boolean retry,
-                String reprompt) {
+                String reprompt,
+                boolean removeViolatingMessage) {
             this.message = ensureNotNull(message, "message");
             this.cause = cause;
             this.guardrailClass = guardrailClass;
             this.retry = retry;
             this.reprompt = reprompt;
+            this.removeViolatingMessage = removeViolatingMessage;
         }
 
         Failure(String message) {
-            this(message, null);
+            this(message, null, null, false, null, false);
         }
 
         Failure(String message, Throwable cause) {
-            this(message, cause, false);
+            this(message, cause, null, false, null, false);
         }
 
         Failure(String message, Throwable cause, boolean retry) {
-            this(message, cause, null, retry, null);
+            this(message, cause, null, retry, null, false);
         }
 
         Failure(String message, Throwable cause, boolean retry, String reprompt) {
-            this(message, cause, null, retry, reprompt);
+            this(message, cause, null, retry, reprompt, false);
         }
 
         @Override
         public Failure withGuardrailClass(Class<? extends Guardrail> guardrailClass) {
             ensureNotNull(guardrailClass, "guardrailClass");
-            return new Failure(message(), cause(), guardrailClass, this.retry, this.reprompt);
+            return new Failure(
+                    message(), cause(), guardrailClass, this.retry, this.reprompt, this.removeViolatingMessage);
         }
 
         @Override
@@ -305,7 +383,8 @@ public final class OutputGuardrailResult implements GuardrailResult<OutputGuardr
                             cause(),
                             this.guardrailClass,
                             false,
-                            this.reprompt)
+                            this.reprompt,
+                            this.removeViolatingMessage)
                     : this;
         }
 
@@ -320,6 +399,13 @@ public final class OutputGuardrailResult implements GuardrailResult<OutputGuardr
 
         public String reprompt() {
             return reprompt;
+        }
+
+        /**
+         * Whether this failure requests removal of the violating {@link AiMessage} from chat memory.
+         */
+        public boolean removeViolatingMessage() {
+            return removeViolatingMessage;
         }
     }
 }

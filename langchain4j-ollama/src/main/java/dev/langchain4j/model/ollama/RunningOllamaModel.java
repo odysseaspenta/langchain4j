@@ -1,18 +1,14 @@
 package dev.langchain4j.model.ollama;
 
+import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
+
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.databind.PropertyNamingStrategies;
-import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import com.fasterxml.jackson.databind.annotation.JsonNaming;
-
+import com.fasterxml.jackson.annotation.JsonProperty;
 import java.time.OffsetDateTime;
-
-import static com.fasterxml.jackson.annotation.JsonInclude.Include.NON_NULL;
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 @JsonInclude(NON_NULL)
-@JsonNaming(PropertyNamingStrategies.SnakeCaseStrategy.class)
 public class RunningOllamaModel {
 
     private String name;
@@ -20,14 +16,23 @@ public class RunningOllamaModel {
     private Long size;
     private String digest;
     private OllamaModelDetails details;
-    @JsonDeserialize(using = OllamaDateDeserializer.class)
+
     private OffsetDateTime expiresAt;
+
     private Long sizeVram;
+    private Integer contextLength;
 
-    RunningOllamaModel() {
-    }
+    RunningOllamaModel() {}
 
-    RunningOllamaModel(String name, String model, Long size, OllamaModelDetails details, String digest, OffsetDateTime expiresAt, Long sizeVram) {
+    RunningOllamaModel(
+            String name,
+            String model,
+            Long size,
+            OllamaModelDetails details,
+            String digest,
+            OffsetDateTime expiresAt,
+            Long sizeVram,
+            Integer contextLength) {
         this.name = name;
         this.model = model;
         this.size = size;
@@ -35,6 +40,7 @@ public class RunningOllamaModel {
         this.digest = digest;
         this.expiresAt = expiresAt;
         this.sizeVram = sizeVram;
+        this.contextLength = contextLength;
     }
 
     public String getName() {
@@ -85,12 +91,25 @@ public class RunningOllamaModel {
         this.expiresAt = expiresAt;
     }
 
+    @JsonProperty("expires_at")
+    void setExpiresAt(Object expiresAt) {
+        this.expiresAt = OllamaTimestamps.parse(expiresAt);
+    }
+
     public Long getSizeVram() {
         return sizeVram;
     }
 
     public void setSizeVram(Long sizeVram) {
         this.sizeVram = sizeVram;
+    }
+
+    public Integer getContextLength() {
+        return contextLength;
+    }
+
+    public void setContextLength(Integer contextLength) {
+        this.contextLength = contextLength;
     }
 
     static Builder builder() {
@@ -106,6 +125,7 @@ public class RunningOllamaModel {
         private OllamaModelDetails details;
         private OffsetDateTime expiresAt;
         private Long sizeVram;
+        private Integer contextLength;
 
         Builder name(String name) {
             this.name = name;
@@ -142,8 +162,13 @@ public class RunningOllamaModel {
             return this;
         }
 
+        Builder contextLength(Integer contextLength) {
+            this.contextLength = contextLength;
+            return this;
+        }
+
         RunningOllamaModel build() {
-            return new RunningOllamaModel(name, model, size, details, digest, expiresAt, sizeVram);
+            return new RunningOllamaModel(name, model, size, details, digest, expiresAt, sizeVram, contextLength);
         }
     }
 }

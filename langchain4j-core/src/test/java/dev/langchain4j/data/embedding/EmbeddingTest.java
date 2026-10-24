@@ -28,6 +28,7 @@ class EmbeddingTest implements WithAssertions {
         assertThat(e1.dimension()).isEqualTo(3);
         assertThat(e1.vector()).containsExactly(1.0f, 2.0f, 3.0f);
         assertThat(e1.vectorAsList()).containsExactly(1.0f, 2.0f, 3.0f);
+        assertThat(e1.vectorAsDoubleArray()).containsExactly(1.0d, 2.0d, 3.0d);
 
         assertThat(e1).hasToString("Embedding { vector = [1.0, 2.0, 3.0] }");
     }
@@ -51,6 +52,27 @@ class EmbeddingTest implements WithAssertions {
 
         Embedding expect = new Embedding(new float[] {0.6f, 0.8f});
         assertThat(embedding).isEqualTo(expect);
+    }
+
+    @Test
+    void normalize_large_finite_values() {
+        Embedding embedding = new Embedding(new float[] {6e20f, -8e20f});
+
+        embedding.normalize();
+
+        assertThat(embedding.vector()[0]).isCloseTo(0.6f, within(1e-6f));
+        assertThat(embedding.vector()[1]).isCloseTo(-0.8f, within(1e-6f));
+    }
+
+    @Test
+    void normalize_when_norm_exceeds_float_range() {
+        Embedding embedding = new Embedding(new float[] {Float.MAX_VALUE, Float.MAX_VALUE});
+
+        embedding.normalize();
+
+        float expected = (float) (1 / Math.sqrt(2));
+        assertThat(embedding.vector()[0]).isCloseTo(expected, within(1e-6f));
+        assertThat(embedding.vector()[1]).isCloseTo(expected, within(1e-6f));
     }
 
     @Test

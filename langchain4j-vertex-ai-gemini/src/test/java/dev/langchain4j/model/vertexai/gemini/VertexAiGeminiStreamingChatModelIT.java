@@ -30,6 +30,7 @@ import dev.langchain4j.model.chat.response.ChatResponse;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Paths;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
@@ -116,7 +117,7 @@ class VertexAiGeminiStreamingChatModelIT {
         VertexAiGeminiStreamingChatModel modelWithSearch = VertexAiGeminiStreamingChatModel.builder()
                 .project(System.getenv("GCP_PROJECT_ID"))
                 .location(System.getenv("GCP_LOCATION"))
-                .modelName("gemini-2.0-flash-lite")
+                .modelName("gemini-2.5-flash-lite")
                 .useGoogleSearch(true)
                 .build();
 
@@ -136,7 +137,7 @@ class VertexAiGeminiStreamingChatModelIT {
         VertexAiGeminiStreamingChatModel modelWithResponseMimeType = VertexAiGeminiStreamingChatModel.builder()
                 .project(System.getenv("GCP_PROJECT_ID"))
                 .location(System.getenv("GCP_LOCATION"))
-                .modelName("gemini-2.0-flash-lite")
+                .modelName("gemini-2.5-flash-lite")
                 .responseMimeType("application/json")
                 .build();
 
@@ -155,7 +156,7 @@ class VertexAiGeminiStreamingChatModelIT {
 
         // then
         ChatResponse chatResponse = handler2.get();
-        assertThat(chatResponse.aiMessage().text()).isEqualToIgnoringWhitespace("[" + expectedJson + "]");
+        assertThat(chatResponse.aiMessage().text()).isEqualToIgnoringWhitespace(expectedJson);
     }
 
     @Disabled("TODO fix")
@@ -170,7 +171,7 @@ class VertexAiGeminiStreamingChatModelIT {
         VertexAiGeminiStreamingChatModel model = VertexAiGeminiStreamingChatModel.builder()
                 .project(System.getenv("GCP_PROJECT_ID"))
                 .location(System.getenv("GCP_LOCATION"))
-                .modelName("gemini-2.0-flash-lite")
+                .modelName("gemini-2.5-flash-lite")
                 .safetySettings(safetySettings)
                 .logRequests(true)
                 .logResponses(true)
@@ -322,7 +323,7 @@ class VertexAiGeminiStreamingChatModelIT {
         model.chat(singletonList(msg), handler);
 
         // then
-        assertThat(handler.get().aiMessage().text()).containsIgnoringCase("Pixel");
+        assertThat(handler.get(Duration.ofSeconds(180)).aiMessage().text()).containsIgnoringCase("Pixel");
     }
 
     @Test
@@ -338,7 +339,7 @@ class VertexAiGeminiStreamingChatModelIT {
 
         // when
         UserMessage msg = UserMessage.from(
-                AudioContent.from("https://storage.googleapis.com/cloud-samples-data/video/animals.mp4"),
+                VideoContent.from("gs://cloud-samples-data/video/animals.mp4"),
                 TextContent.from("What's in this video?"));
 
         // when
@@ -346,7 +347,7 @@ class VertexAiGeminiStreamingChatModelIT {
         model.chat(singletonList(msg), handler);
 
         // then
-        assertThat(handler.get().aiMessage().text()).containsIgnoringCase("animal");
+        assertThat(handler.get(Duration.ofSeconds(180)).aiMessage().text()).containsIgnoringCase("animal");
     }
 
     @Test
@@ -365,7 +366,7 @@ class VertexAiGeminiStreamingChatModelIT {
         assertThat(file).exists();
 
         UserMessage msg = UserMessage.from(
-                AudioContent.from(Paths.get("src/test/resources/fingers.mp4").toUri()),
+                VideoContent.from(Paths.get("src/test/resources/fingers.mp4").toUri()),
                 TextContent.from("What's in this video?"));
 
         // when

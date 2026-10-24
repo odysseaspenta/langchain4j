@@ -1,9 +1,14 @@
 package dev.langchain4j.model.googleai;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import java.util.Locale;
 
 @JsonInclude(JsonInclude.Include.NON_EMPTY)
-public record GeminiThinkingConfig(Boolean includeThoughts, Integer thinkingBudget, String thinkingLevel) {
+public record GeminiThinkingConfig(
+        @JsonProperty("includeThoughts") Boolean includeThoughts,
+        @JsonProperty("thinkingBudget") Integer thinkingBudget,
+        @JsonProperty("thinkingLevel") String thinkingLevel) {
 
     public enum GeminiThinkingLevel {
         MINIMAL,
@@ -37,7 +42,7 @@ public record GeminiThinkingConfig(Boolean includeThoughts, Integer thinkingBudg
         }
 
         public Builder thinkingLevel(GeminiThinkingLevel thinkingLevel) {
-            this.thinkingLevel = thinkingLevel.toString().toLowerCase();
+            this.thinkingLevel = thinkingLevel.name().toLowerCase(Locale.ROOT);
             return this;
         }
 

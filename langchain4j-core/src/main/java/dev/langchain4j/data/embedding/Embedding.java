@@ -1,10 +1,10 @@
 package dev.langchain4j.data.embedding;
 
+import static dev.langchain4j.internal.ValidationUtils.ensureNotNull;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
-
-import static dev.langchain4j.internal.ValidationUtils.ensureNotNull;
 
 /**
  * Represents a dense vector embedding of a text.
@@ -46,19 +46,33 @@ public class Embedding {
     }
 
     /**
+     * Returns a copy of the vector as double array.
+     * @return the vector as double array.
+     */
+    public double[] vectorAsDoubleArray() {
+        double[] doubles = new double[vector.length];
+
+        for (int i = 0; i < vector.length; i++) {
+            doubles[i] = vector[i];
+        }
+
+        return doubles;
+    }
+
+    /**
      * Normalize vector
      */
     public void normalize() {
         double norm = 0.0;
         for (float f : vector) {
-            norm += f * f;
+            norm += (double) f * f;
         }
         norm = Math.sqrt(norm);
         if (Math.abs(norm) < 1e-10) {
             return;
         }
         for (int i = 0; i < vector.length; i++) {
-            vector[i] /= (float) norm;
+            vector[i] = (float) (vector[i] / norm);
         }
     }
 
@@ -85,9 +99,7 @@ public class Embedding {
 
     @Override
     public String toString() {
-        return "Embedding {" +
-                " vector = " + Arrays.toString(vector) +
-                " }";
+        return "Embedding {" + " vector = " + Arrays.toString(vector) + " }";
     }
 
     /**

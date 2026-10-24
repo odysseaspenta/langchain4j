@@ -1,8 +1,11 @@
 package dev.langchain4j.model.openai;
 
+import static dev.langchain4j.internal.CompletableFutureUtils.propagateCancellation;
 import static dev.langchain4j.internal.RetryUtils.withRetryMappingExceptions;
+import static dev.langchain4j.internal.RetryUtils.withRetryMappingExceptionsAsync;
 import static dev.langchain4j.internal.Utils.copy;
 import static dev.langchain4j.internal.Utils.getOrDefault;
+import static dev.langchain4j.internal.Utils.isNullOrEmpty;
 import static dev.langchain4j.model.ModelProvider.OPEN_AI;
 import static dev.langchain4j.model.chat.Capability.RESPONSE_FORMAT_JSON_SCHEMA;
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.DEFAULT_OPENAI_URL;
@@ -10,6 +13,8 @@ import static dev.langchain4j.model.openai.internal.OpenAiUtils.DEFAULT_USER_AGE
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.aiMessageFrom;
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.finishReasonFrom;
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.fromOpenAiResponseFormat;
+import static dev.langchain4j.model.openai.internal.OpenAiUtils.logProbsFrom;
+import static dev.langchain4j.model.openai.internal.OpenAiUtils.noChoicesErrorMessage;
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.toOpenAiChatRequest;
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.tokenUsageFrom;
 import static dev.langchain4j.model.openai.internal.OpenAiUtils.validate;
@@ -18,6 +23,7 @@ import static java.time.Duration.ofSeconds;
 import static java.util.Arrays.asList;
 
 import dev.langchain4j.data.message.AiMessage;
+import dev.langchain4j.exception.InternalServerException;
 import dev.langchain4j.http.client.HttpClientBuilder;
 import dev.langchain4j.model.ModelProvider;
 import dev.langchain4j.model.chat.Capability;
@@ -38,6 +44,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 import org.slf4j.Logger;
 
@@ -58,6 +65,7 @@ public class OpenAiChatModel implements ChatModel {
     private final boolean returnThinking;
     private final boolean sendThinking;
     private final String thinkingFieldName;
+    private final boolean useInputImageFormat;
     private final List<ChatModelListener> listeners;
 
     public OpenAiChatModel(OpenAiChatModelBuilder builder) {
@@ -113,7 +121,11 @@ public class OpenAiChatModel implements ChatModel {
                 .store(getOrDefault(builder.store, openAiParameters.store()))
                 .metadata(getOrDefault(builder.metadata, openAiParameters.metadata()))
                 .serviceTier(getOrDefault(builder.serviceTier, openAiParameters.serviceTier()))
+                .promptCacheKey(getOrDefault(builder.promptCacheKey, openAiParameters.promptCacheKey()))
+                .promptCacheOptions(getOrDefault(builder.promptCacheOptions, openAiParameters.promptCacheOptions()))
                 .reasoningEffort(getOrDefault(builder.reasoningEffort, openAiParameters.reasoningEffort()))
+                .logprobs(getOrDefault(builder.logprobs, openAiParameters.logprobs()))
+                .topLogprobs(getOrDefault(builder.topLogprobs, openAiParameters.topLogprobs()))
                 .customParameters(getOrDefault(builder.customParameters, openAiParameters.customParameters()))
                 .build();
         this.responseFormatString = builder.responseFormatString;
@@ -123,6 +135,7 @@ public class OpenAiChatModel implements ChatModel {
         this.returnThinking = getOrDefault(builder.returnThinking, false);
         this.sendThinking = getOrDefault(builder.sendThinking, false);
         this.thinkingFieldName = getOrDefault(builder.thinkingFieldName, "reasoning_content");
+        this.useInputImageFormat = getOrDefault(builder.useInputImageFormat, false);
         this.listeners = copy(builder.listeners);
     }
 
@@ -147,13 +160,47 @@ public class OpenAiChatModel implements ChatModel {
         validate(parameters);
 
         ChatCompletionRequest openAiRequest = toOpenAiChatRequest(
-                        chatRequest, parameters, sendThinking, thinkingFieldName, strictTools, strictJsonSchema)
+                        chatRequest,
+                        parameters,
+                        sendThinking,
+                        thinkingFieldName,
+                        strictTools,
+                        strictJsonSchema,
+                        useInputImageFormat)
                 .build();
 
         ParsedAndRawResponse<ChatCompletionResponse> parsedAndRawResponse = withRetryMappingExceptions(
                 () -> client.chatCompletion(openAiRequest).executeRaw(), maxRetries);
 
+        return toChatResponse(parsedAndRawResponse);
+    }
+
+    @Override
+    public CompletableFuture<ChatResponse> doChatAsync(ChatRequest chatRequest) {
+
+        OpenAiChatRequestParameters parameters = (OpenAiChatRequestParameters) chatRequest.parameters();
+        validate(parameters);
+
+        ChatCompletionRequest openAiRequest = toOpenAiChatRequest(
+                        chatRequest, parameters, sendThinking, thinkingFieldName, strictTools, strictJsonSchema)
+                .build();
+
+        CompletableFuture<ParsedAndRawResponse<ChatCompletionResponse>> rawFuture = withRetryMappingExceptionsAsync(
+                () -> client.chatCompletion(openAiRequest).executeRawAsync(), maxRetries);
+
+        CompletableFuture<ChatResponse> result = rawFuture.thenApply(this::toChatResponse);
+
+        propagateCancellation(result, rawFuture);
+        return result;
+    }
+
+    private ChatResponse toChatResponse(ParsedAndRawResponse<ChatCompletionResponse> parsedAndRawResponse) {
+
         ChatCompletionResponse openAiResponse = parsedAndRawResponse.parsedResponse();
+
+        if (isNullOrEmpty(openAiResponse.choices())) {
+            throw new InternalServerException(noChoicesErrorMessage(parsedAndRawResponse.rawHttpResponse()));
+        }
 
         OpenAiChatResponseMetadata responseMetadata = OpenAiChatResponseMetadata.builder()
                 .id(openAiResponse.id())
@@ -164,6 +211,7 @@ public class OpenAiChatModel implements ChatModel {
                 .serviceTier(openAiResponse.serviceTier())
                 .systemFingerprint(openAiResponse.systemFingerprint())
                 .rawHttpResponse(parsedAndRawResponse.rawHttpResponse())
+                .logProbs(logProbsFrom(openAiResponse.choices().get(0).logprobs()))
                 .build();
 
         return ChatResponse.builder()
@@ -218,10 +266,15 @@ public class OpenAiChatModel implements ChatModel {
         private Boolean store;
         private Map<String, String> metadata;
         private String serviceTier;
+        private String promptCacheKey;
+        private OpenAiPromptCacheOptions promptCacheOptions;
         private String reasoningEffort;
         private Boolean returnThinking;
         private Boolean sendThinking;
         private String thinkingFieldName;
+        private Boolean useInputImageFormat;
+        private Boolean logprobs;
+        private Integer topLogprobs;
         private Duration timeout;
         private Integer maxRetries;
         private Boolean logRequests;
@@ -380,6 +433,22 @@ public class OpenAiChatModel implements ChatModel {
             return this;
         }
 
+        /**
+         * @since 1.21.0
+         */
+        public OpenAiChatModelBuilder promptCacheKey(String promptCacheKey) {
+            this.promptCacheKey = promptCacheKey;
+            return this;
+        }
+
+        /**
+         * @since 1.21.0
+         */
+        public OpenAiChatModelBuilder promptCacheOptions(OpenAiPromptCacheOptions promptCacheOptions) {
+            this.promptCacheOptions = promptCacheOptions;
+            return this;
+        }
+
         public OpenAiChatModelBuilder serviceTier(String serviceTier) {
             this.serviceTier = serviceTier;
             return this;
@@ -445,6 +514,29 @@ public class OpenAiChatModel implements ChatModel {
         public OpenAiChatModelBuilder sendThinking(Boolean sendThinking) {
             this.sendThinking = sendThinking;
             this.thinkingFieldName = "reasoning_content";
+            return this;
+        }
+
+        /**
+         * Controls whether image content is sent using the {@code input_image} format.
+         * <p>
+         * Disabled by default, preserving the OpenAI Chat Completions {@code image_url} format.
+         *
+         * @param useInputImageFormat whether to send image content as {@code input_image}
+         * @return {@code this}
+         */
+        public OpenAiChatModelBuilder useInputImageFormat(Boolean useInputImageFormat) {
+            this.useInputImageFormat = useInputImageFormat;
+            return this;
+        }
+
+        public OpenAiChatModelBuilder logprobs(Boolean logprobs) {
+            this.logprobs = logprobs;
+            return this;
+        }
+
+        public OpenAiChatModelBuilder topLogprobs(Integer topLogprobs) {
+            this.topLogprobs = topLogprobs;
             return this;
         }
 

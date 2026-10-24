@@ -6,17 +6,20 @@ import static dev.langchain4j.internal.Utils.isNullOrBlank;
 import static dev.langchain4j.internal.Utils.isNullOrEmpty;
 import static dev.langchain4j.internal.Utils.randomUUID;
 import static dev.langchain4j.internal.Utils.toStringValueMap;
+import static dev.langchain4j.internal.ValidationUtils.ensureConsistentSizes;
 import static dev.langchain4j.internal.ValidationUtils.ensureNotBlank;
 import static dev.langchain4j.internal.ValidationUtils.ensureNotEmpty;
 import static dev.langchain4j.internal.ValidationUtils.ensureNotNull;
 import static dev.langchain4j.internal.ValidationUtils.ensureTrue;
 import static java.util.Collections.singletonList;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.data.document.Metadata;
+import dev.langchain4j.internal.Json;
+import dev.langchain4j.internal.ProviderJson;
+import dev.langchain4j.internal.ProviderJsonSpec;
 import dev.langchain4j.data.embedding.Embedding;
 import dev.langchain4j.data.segment.TextSegment;
+import dev.langchain4j.model.embedding.EmbeddingModel;
 import dev.langchain4j.store.embedding.EmbeddingMatch;
 import dev.langchain4j.store.embedding.EmbeddingSearchRequest;
 import dev.langchain4j.store.embedding.EmbeddingSearchResult;
@@ -101,16 +104,13 @@ import org.hibernate.relational.SchemaManager;
 import org.hibernate.tool.schema.Action;
 import org.hibernate.tool.schema.SourceType;
 import org.hibernate.type.descriptor.java.JavaType;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
  * Hibernate ORM EmbeddingStore Implementation
  */
 // Needed for inherited bean injection validation
 public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
-    private static final Logger log = LoggerFactory.getLogger(HibernateEmbeddingStore.class);
-    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final Json.JsonCodec CODEC = ProviderJson.codec(ProviderJsonSpec.builder().build());
     private static final boolean IS_HIBERNATE_ORM_7_1;
 
     static {
@@ -399,7 +399,9 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
 
     @Override
     public void removeAll(Collection<String> ids) {
-        ensureNotEmpty(ids, "ids");
+        if (isNullOrEmpty(ids)) {
+            return;
+        }
         sessionFactory.inTransaction(session -> {
             session.createMutationQuery(deleteByIds)
                     .setParameter(
@@ -430,9 +432,18 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                         .executeUpdate();
             });
         } else {
-            sessionFactory
-                    .getSchemaManager()
-                    .truncateTable(entityPersister.getIdentifierTableMapping().getTableName());
+            try {
+                sessionFactory
+                        .getSchemaManager()
+                        .truncateTable(
+                                entityPersister.getIdentifierTableMapping().getTableName());
+            } catch (UnsupportedOperationException ex) {
+                // Workaround HHH-20500 since we can't reliably detect the Hibernate ORM version
+                sessionFactory.inStatelessTransaction(session -> {
+                    session.createMutationQuery("delete from " + entityPersister.getEntityName())
+                            .executeUpdate();
+                });
+            }
         }
     }
 
@@ -611,12 +622,8 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                 final Object textMetadata = tuple[3];
                 final Metadata metadata;
                 if (textMetadata instanceof String metadataJson) {
-                    try {
-                        //noinspection unchecked
-                        metadata = new Metadata(OBJECT_MAPPER.readValue(getOrDefault(metadataJson, "{}"), Map.class));
-                    } catch (JsonProcessingException e) {
-                        throw new RuntimeException(e);
-                    }
+                    //noinspection unchecked
+                    metadata = new Metadata(CODEC.fromJson(getOrDefault(metadataJson, "{}"), Map.class));
                 } else if (textMetadata instanceof Map<?, ?> metadataMap) {
                     //noinspection unchecked
                     metadata = new Metadata((Map<String, ?>) metadataMap);
@@ -833,7 +840,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                                         .comparisonValue()
                                         .replace("\\", "\\\\")
                                         .replace("%", "\\%")
-                                        .replace("?", "\\?")
+                                        .replace("_", "\\_")
                                 + "%",
                         '\\'));
     }
@@ -1046,10 +1053,64 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
 
     public void addAllEntities(List<?> entities) {
         if (isNullOrEmpty(entities)) {
-            log.info("Empty entities - no ops");
             return;
         }
         sessionFactory.inStatelessTransaction(session -> session.insertMultiple(entities));
+    }
+
+    public void applyEmbeddings(List<? extends E> entities, EmbeddingModel embeddingModel) {
+        final List<TextSegment> textSegments = createTextSegments(entities);
+        final List<Embedding> embeddings = embeddingModel.embedAll(textSegments).content();
+        for (int i = 0; i < entities.size(); i++) {
+            embeddingAttributeMapping.setValue(
+                    entities.get(i), embeddings.get(i).vector());
+        }
+    }
+
+    public List<TextSegment> createTextSegments(List<? extends E> entities) {
+        if (embeddedTextAttributeMapping == null) {
+            throw new IllegalStateException("Embedding entity [" + entityClass.getName()
+                    + "] has no text attribute mapping, so can't create text segments");
+        }
+        final List<TextSegment> textSegments = new ArrayList<>(entities.size());
+        for (E entity : entities) {
+            final String text = (String) embeddedTextAttributeMapping.getValue(entity);
+            if (text == null) {
+                textSegments.add(null);
+            } else {
+                @SuppressWarnings("unchecked")
+                final Metadata metadata =
+                        new Metadata((Map<String, ?>) unmappedMetadataAttributeMapping.getValue(entity));
+                for (Map.Entry<String, AttributeMapping> metadataAttribute : metadataAttributeMappings.entrySet()) {
+                    final String metadataAttributePath = metadataAttribute.getKey();
+                    final JavaType<?> metadataAttributeJavaType =
+                            metadataAttribute.getValue().getJavaType();
+                    final Object metadataValue = metadataAttribute.getValue().getValue(entity);
+                    if (metadataValue != null) {
+                        if (metadataValue instanceof String string) {
+                            metadata.put(metadataAttributePath, string);
+                        } else if (metadataValue instanceof UUID uuid) {
+                            metadata.put(metadataAttributePath, uuid);
+                        } else if (metadataValue instanceof Integer integerValue) {
+                            metadata.put(metadataAttributePath, integerValue);
+                        } else if (metadataValue instanceof Long longValue) {
+                            metadata.put(metadataAttributePath, longValue);
+                        } else if (metadataValue instanceof Float floatValue) {
+                            metadata.put(metadataAttributePath, floatValue);
+                        } else if (metadataValue instanceof Double doubleValue) {
+                            metadata.put(metadataAttributePath, doubleValue);
+                        } else {
+                            //noinspection unchecked
+                            metadata.put(
+                                    metadataAttributePath,
+                                    ((JavaType<Object>) metadataAttributeJavaType).toString(metadataValue));
+                        }
+                    }
+                }
+                textSegments.add(TextSegment.from(text, metadata));
+            }
+        }
+        return textSegments;
     }
 
     @Override
@@ -1098,7 +1159,6 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
         // todo: make this configurable or always work with entities directly?
         if (!idGenerator.allowAssignedIdentifiers() || idGenerator.generatedOnExecution()) {
             if (isNullOrEmpty(embeddings)) {
-                log.info("Empty embeddings - no ops");
                 return Collections.emptyList();
             }
             ensureTrue(
@@ -1140,6 +1200,10 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
 
     @Override
     public void addAll(List<String> idStrings, List<Embedding> embeddings, List<TextSegment> embedded) {
+        ensureConsistentSizes(idStrings, embeddings, embedded);
+        if (isNullOrEmpty(embeddings)) {
+            return;
+        }
         final ArrayList<Object> ids = new ArrayList<>(idStrings.size());
         for (String id : idStrings) {
             ids.add(idType.fromString(id));
@@ -1183,12 +1247,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                 if (unmappedMetadataAttributeMapType != null) {
                     values[unmappedMetadataAttributeMapping.getStateArrayPosition()] = metadataMap;
                 } else {
-                    try {
-                        values[unmappedMetadataAttributeMapping.getStateArrayPosition()] =
-                                OBJECT_MAPPER.writeValueAsString(metadataMap);
-                    } catch (JsonProcessingException e) {
-                        throw new RuntimeException(e);
-                    }
+                    values[unmappedMetadataAttributeMapping.getStateArrayPosition()] = CODEC.toJson(metadataMap);
                 }
             } else {
                 if (embeddedTextAttributeMapping != null) {
@@ -1196,7 +1255,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                 }
                 values[unmappedMetadataAttributeMapping.getStateArrayPosition()] = null;
                 for (Map.Entry<String, AttributeMapping> entry : metadataAttributeMappings.entrySet()) {
-                    if (entry.getValue().getDeclaringType() != entityPersister) {
+                    if (entry.getValue().getDeclaringType() == entityPersister) {
                         values[entry.getValue().getStateArrayPosition()] = null;
                     }
                 }
@@ -1211,14 +1270,10 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
 
     private void addAll(
             List<Object> ids, List<Embedding> embeddings, List<TextSegment> embedded, StatelessSession session) {
-        if (isNullOrEmpty(ids) || isNullOrEmpty(embeddings)) {
-            log.info("Empty embeddings - no ops");
+        ensureConsistentSizes(ids, embeddings, embedded);
+        if (isNullOrEmpty(embeddings)) {
             return;
         }
-        ensureTrue(ids.size() == embeddings.size(), "ids size is not equal to embeddings size");
-        ensureTrue(
-                embedded == null || embeddings.size() == embedded.size(),
-                "embeddings size is not equal to embedded size");
         if (!idGenerator.allowAssignedIdentifiers()) {
             throw new IllegalStateException("Entity does not allow assigning identifiers");
         }
@@ -1253,13 +1308,8 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                             metadataMap,
                             unmappedMetadataAttributeMapType);
                 } else {
-                    try {
-                        mutationQuery.setParameter(
-                                unmappedMetadataAttributeMapping.getAttributeName(),
-                                OBJECT_MAPPER.writeValueAsString(metadataMap));
-                    } catch (JsonProcessingException e) {
-                        throw new RuntimeException(e);
-                    }
+                    mutationQuery.setParameter(
+                            unmappedMetadataAttributeMapping.getAttributeName(), CODEC.toJson(metadataMap));
                 }
             } else {
                 if (embeddedTextAttributeMapping != null) {
@@ -1282,7 +1332,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
         private String[] metadataAttributeNames;
         private SessionFactory sessionFactory;
         private DatabaseKind databaseKind;
-        private DistanceFunction distanceFunction = DistanceFunction.COSINE;
+        private DistanceFunction distanceFunction;
 
         Builder(Class<E> entityClass) {
             this.entityClass = entityClass;
@@ -1328,6 +1378,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
             final String embeddedTextAttributeName;
             final String unmappedMetadataAttributeName;
             final String[] metadataAttributeNames;
+            DistanceFunction localDistanceFunction = null;
             if (this.embeddingAttributeName == null
                     || this.embeddedTextAttributeName == null
                     || this.unmappedMetadataAttributeName == null
@@ -1340,13 +1391,26 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                 for (SingularAttribute<?, ?> singularAttribute : entityType.getSingularAttributes()) {
                     final Member member = singularAttribute.getJavaMember();
                     if (member instanceof AnnotatedElement annotatedElement) {
+                        EmbeddingVector embeddingVector = annotatedElement.getAnnotation(EmbeddingVector.class);
+                        if (embeddingVector != null) {
+                            if (embeddingAttribute != null) {
+                                throw new IllegalArgumentException(
+                                        "Multiple @Embedding/@EmbeddingVector annotated attributes ["
+                                                + embeddingAttribute.getName() + "," + singularAttribute.getName()
+                                                + "] found on " + entityClass.getName()
+                                                + ". Please specify the explicit embedding vector attribute name instead");
+                            }
+                            embeddingAttribute = singularAttribute;
+                            localDistanceFunction = embeddingVector.distance();
+                        }
                         if (annotatedElement.isAnnotationPresent(
                                 dev.langchain4j.store.embedding.hibernate.Embedding.class)) {
                             if (embeddingAttribute != null) {
-                                throw new IllegalArgumentException("Multiple @Embedding annotated attributes ["
-                                        + embeddingAttribute.getName() + "," + singularAttribute.getName()
-                                        + "] found on " + entityClass.getName()
-                                        + ". Please specify the explicit embedding attribute name instead");
+                                throw new IllegalArgumentException(
+                                        "Multiple @Embedding/@EmbeddingVector annotated attributes ["
+                                                + embeddingAttribute.getName() + "," + singularAttribute.getName()
+                                                + "] found on " + entityClass.getName()
+                                                + ". Please specify the explicit embedding vector attribute name instead");
                             }
                             embeddingAttribute = singularAttribute;
                         }
@@ -1408,6 +1472,9 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
             } else {
                 databaseKind = this.databaseKind;
             }
+            final DistanceFunction distanceFunction = this.distanceFunction != null
+                    ? this.distanceFunction
+                    : localDistanceFunction != null ? localDistanceFunction : DistanceFunction.COSINE;
             return new HibernateEmbeddingStore<>(
                     false,
                     this.sessionFactory,
@@ -1417,7 +1484,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
                     embeddedTextAttributeName,
                     unmappedMetadataAttributeName,
                     metadataAttributeNames,
-                    this.distanceFunction);
+                    distanceFunction);
         }
 
         private void collectMetadataAttributes(
@@ -1699,7 +1766,7 @@ public class HibernateEmbeddingStore<E> implements EmbeddingStore<TextSegment> {
             return "HibernateEmbeddingStore.DynamicBuilder(jdbcUrl=" + this.jdbcUrl
                     + ", databaseKind=" + this.databaseKind
                     + ", user=" + this.user
-                    + ", password=" + this.password
+                    + ", password=" + (this.password == null ? null : "********")
                     + ", table=" + this.table
                     + ", dimension=" + this.dimension
                     + ", createIndex=" + this.createIndex

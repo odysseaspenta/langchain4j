@@ -11,16 +11,15 @@ import java.lang.annotation.Target;
  * Marks a method as the output definition of a workflow agent,
  * generally combining results from different states of the {@link AgenticScope}.
  * The method must be static and return the output of the agent.
+ * It can also declare parameters resolved through a {@link SupplierParameterResolver}.
  * <p>
  * Example:
  * <pre>
  * {@code
  *     public interface EveningPlannerAgent {
  *
- *         @ParallelAgent(outputKey = "plans", subAgents = {
- *                 @SubAgent(type = FoodExpert.class, outputKey = "meals"),
- *                 @SubAgent(type = MovieExpert.class, outputKey = "movies")
- *         })
+ *         @ParallelAgent(outputKey = "plans",
+ *                 subAgents = { FoodExpert.class, MovieExpert.class })
  *         List<EveningPlan> plan(@V("mood") String mood);
  *
  *         @Output

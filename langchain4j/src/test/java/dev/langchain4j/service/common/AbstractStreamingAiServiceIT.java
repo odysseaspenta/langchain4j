@@ -151,12 +151,16 @@ public abstract class AbstractStreamingAiServiceIT {
         assertThat(tokenUsage).isExactlyInstanceOf(tokenUsageType(streamingChatModel));
         assertThat(tokenUsage.inputTokenCount()).isPositive();
         assertThat(tokenUsage.outputTokenCount()).isPositive();
-        assertThat(tokenUsage.totalTokenCount())
-                .isEqualTo(tokenUsage.inputTokenCount() + tokenUsage.outputTokenCount());
+        assertTotalTokenCount(tokenUsage);
     }
 
     protected Class<? extends TokenUsage> tokenUsageType(StreamingChatModel streamingChatModel) {
         return TokenUsage.class;
+    }
+
+    protected void assertTotalTokenCount(TokenUsage tokenUsage) {
+        assertThat(tokenUsage.totalTokenCount())
+                .isEqualTo(tokenUsage.inputTokenCount() + tokenUsage.outputTokenCount());
     }
 
     protected boolean assertTokenUsage() {
@@ -207,7 +211,7 @@ public abstract class AbstractStreamingAiServiceIT {
 
         // when
         // Check that the memory is not corrupted and conversation can continue
-        assistant.chat("Now add 47 to the previous result")
+        assistant.chat("Now use the tool to add 47 to the previous result")
                 .onPartialResponse(ignored -> {})
                 .onToolExecuted(toolExecutions2::add)
                 .onCompleteResponse(future2::complete)
@@ -225,6 +229,6 @@ public abstract class AbstractStreamingAiServiceIT {
 
         messages = chatMemory.messages();
         assertThat(messages).hasSize(6);
-        checkMemoryWithImmediateTool(messages.subList(3, 6), "Now add 47 to the previous result", "171");
+        checkMemoryWithImmediateTool(messages.subList(3, 6), "Now use the tool to add 47 to the previous result", "171");
     }
 }

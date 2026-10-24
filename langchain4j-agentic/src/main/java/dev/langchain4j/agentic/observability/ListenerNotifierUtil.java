@@ -51,6 +51,17 @@ public class ListenerNotifierUtil {
         }
     }
 
+    public static void agentSkipped(
+            AgentListener listener, AgenticScope agenticScope, AgentInstance agent, String reason) {
+        if (listener != null) {
+            try {
+                listener.onAgentSkipped(new AgentSkipped(agenticScope, agent, reason));
+            } catch (Exception e) {
+                LOG.error("agentSkipped listener for agent " + agent.name() + " failed: " + e.getMessage(), e);
+            }
+        }
+    }
+
     public static void afterAgenticScopeCreated(AgentListener listener, AgenticScope agenticScope) {
         if (listener != null) {
             try {
@@ -67,6 +78,16 @@ public class ListenerNotifierUtil {
                 listener.beforeAgenticScopeDestroyed(agenticScope);
             } catch (Exception e) {
                 LOG.error("beforeAgenticScopeDestroyed listener failed: " + e.getMessage(), e);
+            }
+        }
+    }
+
+    public static void onAgenticSystemSuspended(AgentListener listener, AgenticScope agenticScope) {
+        if (listener != null) {
+            try {
+                listener.onAgenticSystemSuspended(agenticScope);
+            } catch (Exception e) {
+                LOG.error("onAgenticSystemSuspended listener failed: " + e.getMessage(), e);
             }
         }
     }
